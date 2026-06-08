@@ -1,0 +1,148 @@
+diff --git a/httpcore5/src/main/java/org/apache/hc/core5/http/io/entity/EntityUtils.java b/httpcore5/src/main/java/org/apache/hc/core5/http/io/entity/EntityUtils.java
+index e4c3c000f..33ad0e716 100644
+--- a/httpcore5/src/main/java/org/apache/hc/core5/http/io/entity/EntityUtils.java
++++ b/httpcore5/src/main/java/org/apache/hc/core5/http/io/entity/EntityUtils.java
+@@ -168,9 +168,10 @@ public static byte[] toByteArray(final HttpEntity entity, final int maxResultLen
+             final byte[] tmp = new byte[DEFAULT_BYTE_BUFFER_SIZE];
+             int l;
+             while ((l = inStream.read(tmp)) != -1 && buffer.length() < maxResultLength) {
+-                buffer.append(tmp, 0, l);
++                final int remaining = maxResultLength - buffer.length();
++                final int chunk = Math.min(l, remaining);
++                buffer.append(tmp, 0, chunk);
+             }
+-            buffer.setLength(Math.min(buffer.length(), maxResultLength));
+             return buffer.toByteArray();
+         }
+     }
+@@ -186,9 +187,10 @@ private static CharArrayBuffer toCharArrayBuffer(final InputStream inStream, fin
+         final char[] tmp = new char[DEFAULT_CHAR_BUFFER_SIZE];
+         int chReadCount;
+         while ((chReadCount = reader.read(tmp)) != -1 && buf.length() < maxResultLength) {
+-            buf.append(tmp, 0, chReadCount);
++            final int remaining = maxResultLength - buf.length();
++            final int chunk = Math.min(chReadCount, remaining);
++            buf.append(tmp, 0, chunk);
+         }
+-        buf.setLength(Math.min(buf.length(), maxResultLength));
+         return buf;
+     }
+ 
+diff --git a/httpcore5/src/test/java/org/apache/hc/core5/http/io/entity/TestEntityUtils.java b/httpcore5/src/test/java/org/apache/hc/core5/http/io/entity/TestEntityUtils.java
+index 3e566895b..b8cee2b19 100644
+--- a/httpcore5/src/test/java/org/apache/hc/core5/http/io/entity/TestEntityUtils.java
++++ b/httpcore5/src/test/java/org/apache/hc/core5/http/io/entity/TestEntityUtils.java
+@@ -303,4 +303,113 @@ void testStringMaxResultLength() throws IOException, ParseException {
+         }
+     }
+ 
++    @Test
++    void testToByteArrayWithMaxResultLengthZero() throws IOException {
++        final byte[] allBytes = "Message content".getBytes(StandardCharsets.US_ASCII);
++        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
++        final byte[] bytes = EntityUtils.toByteArray(entity, 0);
++        Assertions.assertNotNull(bytes);
++        Assertions.assertEquals(0, bytes.length);
++    }
++
++    @Test
++    void testToByteArrayWithSmallMaxResultLengths() throws IOException {
++        final byte[] allBytes = "Message content".getBytes(StandardCharsets.US_ASCII);
++        final int contentLength = allBytes.length;
++
++        {
++            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), contentLength, null);
++            final byte[] bytes = EntityUtils.toByteArray(entity, 1);
++            Assertions.assertEquals(1, bytes.length);
++            Assertions.assertEquals(allBytes[0], bytes[0]);
++        }
++
++        {
++            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), contentLength, null);
++            final byte[] bytes = EntityUtils.toByteArray(entity, 2);
++            Assertions.assertEquals(2, bytes.length);
++            Assertions.assertEquals(allBytes[0], bytes[0]);
++            Assertions.assertEquals(allBytes[1], bytes[1]);
++        }
++
++        {
++            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), contentLength, null);
++            final byte[] bytes = EntityUtils.toByteArray(entity, contentLength - 1);
++            Assertions.assertEquals(contentLength - 1, bytes.length);
++            for (int i = 0; i < contentLength - 1; i++) {
++                Assertions.assertEquals(allBytes[i], bytes[i]);
++            }
++        }
++    }
++
++    @Test
++    void testToByteArrayWithUnknownLengthAndLargeContent() throws IOException {
++        final byte[] allBytes = new byte[5000];
++        Arrays.fill(allBytes, (byte) 'X');
++        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), null);
++
++        final int maxResultLength = 100;
++        final byte[] bytes = EntityUtils.toByteArray(entity, maxResultLength);
++        Assertions.assertEquals(maxResultLength, bytes.length);
++        for (int i = 0; i < maxResultLength; i++) {
++            Assertions.assertEquals(allBytes[i], bytes[i]);
++        }
++    }
++
++    @Test
++    void testToStringWithAsciiMaxResultLength() throws IOException, ParseException {
++        final String allMessage = "Hello World!";
++        final byte[] allBytes = allMessage.getBytes(StandardCharsets.US_ASCII);
++
++        {
++            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
++            final String s = EntityUtils.toString(entity, StandardCharsets.US_ASCII, 5);
++            Assertions.assertEquals("Hello", s);
++        }
++
++        {
++            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
++            final String s = EntityUtils.toString(entity, StandardCharsets.US_ASCII, 1);
++            Assertions.assertEquals("H", s);
++        }
++    }
++
++    @Test
++    void testToStringWithMultiByteUtf8MaxResultLength() throws IOException, ParseException {
++        final String content = constructString(SWISS_GERMAN_HELLO);
++        final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
++
++        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(bytes), bytes.length, null);
++        final String s = EntityUtils.toString(entity, StandardCharsets.UTF_8, 5);
++        Assertions.assertNotNull(s);
++        Assertions.assertTrue(s.length() <= 5);
++        Assertions.assertEquals(content.substring(0, 5), s);
++    }
++
++    @Test
++    void testParseWithMaxStreamLength() throws IOException {
++        final String content = "Name1=Value1&Name2=Value2";
++        final byte[] allBytes = content.getBytes(StandardCharsets.US_ASCII);
++        final int truncateLen = "Name1=Value1".length();
++
++        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length,
++                ContentType.APPLICATION_FORM_URLENCODED);
++        final List<NameValuePair> result = EntityUtils.parse(entity, truncateLen);
++        Assertions.assertEquals(1, result.size());
++        assertNameValuePair(result.get(0), "Name1", "Value1");
++    }
++
++    @Test
++    void testParseWithMaxStreamLengthUnknownLength() throws IOException {
++        final String content = "Name1=Value1&Name2=Value2";
++        final byte[] allBytes = content.getBytes(StandardCharsets.US_ASCII);
++        final int truncateLen = "Name1=Value1".length();
++
++        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes),
++                ContentType.APPLICATION_FORM_URLENCODED);
++        final List<NameValuePair> result = EntityUtils.parse(entity, truncateLen);
++        Assertions.assertEquals(1, result.size());
++        assertNameValuePair(result.get(0), "Name1", "Value1");
++    }
++
+ }

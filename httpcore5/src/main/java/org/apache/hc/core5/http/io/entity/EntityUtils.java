@@ -168,9 +168,10 @@ public final class EntityUtils {
             final byte[] tmp = new byte[DEFAULT_BYTE_BUFFER_SIZE];
             int l;
             while ((l = inStream.read(tmp)) != -1 && buffer.length() < maxResultLength) {
-                buffer.append(tmp, 0, l);
+                final int remaining = maxResultLength - buffer.length();
+                final int chunk = Math.min(l, remaining);
+                buffer.append(tmp, 0, chunk);
             }
-            buffer.setLength(Math.min(buffer.length(), maxResultLength));
             return buffer.toByteArray();
         }
     }
@@ -186,9 +187,10 @@ public final class EntityUtils {
         final char[] tmp = new char[DEFAULT_CHAR_BUFFER_SIZE];
         int chReadCount;
         while ((chReadCount = reader.read(tmp)) != -1 && buf.length() < maxResultLength) {
-            buf.append(tmp, 0, chReadCount);
+            final int remaining = maxResultLength - buf.length();
+            final int chunk = Math.min(chReadCount, remaining);
+            buf.append(tmp, 0, chunk);
         }
-        buf.setLength(Math.min(buf.length(), maxResultLength));
         return buf;
     }
 
