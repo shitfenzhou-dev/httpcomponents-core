@@ -72,6 +72,7 @@ class H2ConfigTest {
                 .setMaxFrameSize(16384)
                 .setPushEnabled(true)
                 .setCompressionEnabled(true)
+                .setMaxContinuations(7)
                 .build();
 
         final H2Config.Builder builder = H2Config.copy(h2Config);
@@ -82,9 +83,27 @@ class H2ConfigTest {
                 () -> assertEquals(h2Config.getInitialWindowSize(), h2Config2.getInitialWindowSize()),
                 () -> assertEquals(h2Config.getMaxConcurrentStreams(), h2Config2.getMaxConcurrentStreams()),
                 () -> assertEquals(h2Config.getMaxFrameSize(), h2Config2.getMaxFrameSize()),
-                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize())
+                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize()),
+                () -> assertEquals(h2Config.getMaxContinuations(), h2Config2.getMaxContinuations())
         );
 
+        final H2Config h2Config0 = H2Config.custom().setMaxContinuations(0).build();
+        assertEquals(0, H2Config.copy(h2Config0).build().getMaxContinuations());
+    }
+
+    @Test
+    void setMaxContinuationsInvalid() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class, () -> {
+            H2Config.custom().setMaxContinuations(-1);
+        });
+    }
+
+    @Test
+    void testToString() {
+        final H2Config h2Config = H2Config.custom()
+                .setMaxContinuations(42)
+                .build();
+        assertTrue(h2Config.toString().contains("maxContinuations=42"));
     }
 
 }

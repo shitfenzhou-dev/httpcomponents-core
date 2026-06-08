@@ -1226,7 +1226,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             recordPriorityFromHeaders(stream, headers);
             stream.consumeHeader(headers, frame.isFlagSet(FrameFlag.END_STREAM));
         } else {
-            continuation.copyPayload(payload);
+            continuation.copyPayload(false, payload);
         }
     }
 
