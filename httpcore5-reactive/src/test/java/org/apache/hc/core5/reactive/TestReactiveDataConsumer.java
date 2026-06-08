@@ -217,4 +217,261 @@ class TestReactiveDataConsumer {
         Assertions.assertFalse(result.isOnError());
         Assertions.assertTrue(result.isOnComplete());
     }
+
+    @Test
+    void testUnboundedDemandDeliversAllBufferedAndCompletes() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.streamEnd(null);
+
+        final List<ByteBuffer> received = Collections.synchronizedList(new ArrayList<>());
+        final CountDownLatch complete = new CountDownLatch(1);
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                s.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+                received.add(bb);
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+            }
+
+            @Override
+            public void onComplete() {
+                complete.countDown();
+            }
+        });
+
+        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS), "Stream did not complete before timeout");
+        Assertions.assertEquals(3, received.size());
+        for (int i = 0; i < 3; i++) {
+            Assertions.assertEquals(1024, received.get(i).remaining());
+        }
+    }
+
+    @Test
+    void testRequestMaxThenRequestOneDoesNotOverflowAndDataNotStuck() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+
+        final List<ByteBuffer> received = Collections.synchronizedList(new ArrayList<>());
+        final AtomicReference<Subscription> subRef = new AtomicReference<>();
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subRef.set(s);
+                s.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+                received.add(bb);
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        subRef.get().request(1);
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+
+        Thread.sleep(100);
+
+        Assertions.assertEquals(2, received.size(),
+                "After MAX then request(1), all consumed data should still be delivered");
+    }
+
+    @Test
+    void testMultipleRequestMaxDoesNotOverflow() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+
+        final List<ByteBuffer> received = Collections.synchronizedList(new ArrayList<>());
+        final CountDownLatch complete = new CountDownLatch(1);
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                s.request(Long.MAX_VALUE);
+                s.request(Long.MAX_VALUE);
+                s.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+                received.add(bb);
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+            }
+
+            @Override
+            public void onComplete() {
+                complete.countDown();
+            }
+        });
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.streamEnd(null);
+
+        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS), "Stream did not complete before timeout");
+        Assertions.assertEquals(3, received.size());
+    }
+
+    @Test
+    void testBoundedDemandOnlyDeliversRequestedCount() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+
+        final List<ByteBuffer> received = Collections.synchronizedList(new ArrayList<>());
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                s.request(2);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+                received.add(bb);
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        Thread.sleep(100);
+
+        Assertions.assertEquals(2, received.size(),
+                "With bounded demand of 2, only 2 out of 3 buffered items should be delivered");
+    }
+
+    @Test
+    void testRequestZeroTriggersError() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final AtomicReference<Throwable> error = new AtomicReference<>();
+        final CountDownLatch errorLatch = new CountDownLatch(1);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                s.request(0);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+                error.set(t);
+                errorLatch.countDown();
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        Assertions.assertTrue(errorLatch.await(1, TimeUnit.SECONDS), "Error not delivered before timeout");
+        Assertions.assertTrue(error.get() instanceof IllegalArgumentException,
+                "request(0) must trigger IllegalArgumentException");
+    }
+
+    @Test
+    void testRequestNegativeTriggersError() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final AtomicReference<Throwable> error = new AtomicReference<>();
+        final CountDownLatch errorLatch = new CountDownLatch(1);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                s.request(-1);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+                error.set(t);
+                errorLatch.countDown();
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        Assertions.assertTrue(errorLatch.await(1, TimeUnit.SECONDS), "Error not delivered before timeout");
+        Assertions.assertTrue(error.get() instanceof IllegalArgumentException,
+                "request(-1) must trigger IllegalArgumentException");
+    }
+
+    @Test
+    void testCapacityChannelReceivesUpdateUnderUnboundedDemand() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+
+        final AtomicInteger lastIncrement = new AtomicInteger(-1);
+        final CapacityChannel channel = lastIncrement::set;
+        consumer.updateCapacity(channel);
+
+        final AtomicReference<Subscription> subRef = new AtomicReference<>();
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subRef.set(s);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer bb) {
+            }
+
+            @Override
+            public void onError(final Throwable t) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+
+        subRef.get().request(Long.MAX_VALUE);
+
+        Assertions.assertEquals(3 * 1024, lastIncrement.get(),
+                "CapacityChannel must receive total bytes delivered under unbounded demand");
+    }
 }
