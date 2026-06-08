@@ -991,4 +991,108 @@ class TestURIBuilder {
         Assertions.assertEquals(expectedEncodedQuery, uri.getRawQuery());
     }
 
+    // ==================== 路径追加相关测试整理与增强 ====================
+
+    @Test
+    void testRootlessPathWithAppend() throws Exception {
+        // 测试 rootless path 情况下的 append 行为
+        final URI uri = new URIBuilder()
+                .setPath("api")
+                .appendPath("v1/resources")
+                .appendPath("idA")
+                .build();
+        Assertions.assertEquals(URI.create("api/v1/resources/idA"), uri);
+    }
+
+    @Test
+    void testAppendToPathWithAuthority() throws Exception {
+        // 测试带 authority 时的路径追加行为（应生成根路径）
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("api")
+                .appendPath("v1")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api/v1"), uri);
+    }
+
+    @Test
+    void testAppendPathEmptyAndSlashes() throws Exception {
+        // 测试 appendPath("")、appendPath("/")、appendPath("//") 的行为
+        final URI uri1 = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("/api")
+                .appendPath("")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api/"), uri1);
+
+        final URI uri2 = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("/api")
+                .appendPath("/")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api//"), uri2);
+
+        final URI uri3 = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("/api")
+                .appendPath("//")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api///"), uri3);
+    }
+
+    @Test
+    void testAppendPathSegmentsWithSlashesAndSpaces() throws Exception {
+        // 测试 path segment 中的斜杠和空格的编码行为
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .appendPathSegments("a/b", "c d")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/a%2Fb/c%20d"), uri);
+    }
+
+    @Test
+    void testSetPathSegmentsRootlessThenAppend() throws Exception {
+        // 测试先 setPathSegmentsRootless 再 appendPathSegments 保持 rootless
+        final URI uri = new URIBuilder()
+                .setScheme("file")
+                .setPathSegmentsRootless("dir", "foo")
+                .appendPathSegments("bar")
+                .build();
+        Assertions.assertEquals(URI.create("file:dir/foo/bar"), uri);
+    }
+
+    @Test
+    void testAppendPathSegmentsNullList() throws Exception {
+        // 测试 appendPathSegments(List) 接受 null 的行为
+        final List<String> nullSegments = null;
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("/api")
+                .appendPathSegments(nullSegments)
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api"), uri);
+    }
+
+    @Test
+    void testAppendPathEmptyWithRootless() throws Exception {
+        // 测试 rootless path 情况下 append empty/slash 的行为
+        final URI uri1 = new URIBuilder()
+                .setPath("api")
+                .appendPath("")
+                .build();
+        Assertions.assertEquals(URI.create("api/"), uri1);
+
+        final URI uri2 = new URIBuilder()
+                .setPath("api")
+                .appendPath("/")
+                .build();
+        Assertions.assertEquals(URI.create("api//"), uri2);
+    }
+
 }
