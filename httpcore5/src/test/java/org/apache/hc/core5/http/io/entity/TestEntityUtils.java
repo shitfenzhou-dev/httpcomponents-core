@@ -244,7 +244,9 @@ class TestEntityUtils {
         final byte[] allBytes = "Message content".getBytes(StandardCharsets.US_ASCII);
         final Map<Integer, byte[]> testCases = new HashMap<>();
         testCases.put(0, new byte[]{});
+        testCases.put(1, Arrays.copyOfRange(allBytes, 0, 1));
         testCases.put(2, Arrays.copyOfRange(allBytes, 0, 2));
+        testCases.put(allBytes.length - 1, Arrays.copyOfRange(allBytes, 0, allBytes.length - 1));
         testCases.put(allBytes.length, allBytes);
         testCases.put(Integer.MAX_VALUE, allBytes);
 
@@ -268,12 +270,13 @@ class TestEntityUtils {
         Arrays.fill(allBytes, b);
         final Map<Integer, byte[]> testCases = new HashMap<>();
         testCases.put(0, new byte[]{});
+        testCases.put(1, Arrays.copyOfRange(allBytes, 0, 1));
         testCases.put(2, Arrays.copyOfRange(allBytes, 0, 2));
         testCases.put(allBytes.length, allBytes);
         testCases.put(Integer.MAX_VALUE, allBytes);
 
         for (final Map.Entry<Integer, byte[]> tc : testCases.entrySet()) {
-            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), null);
+            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), -1, null);
 
             final byte[] bytes = EntityUtils.toByteArray(entity, tc.getKey());
             final byte[] expectedBytes = tc.getValue();
@@ -301,6 +304,37 @@ class TestEntityUtils {
             Assertions.assertNotNull(string);
             Assertions.assertEquals(expectedString, string);
         }
+    }
+
+    @Test
+    void testStringMaxResultLengthUTF8() throws IOException, ParseException {
+        final String allMessage = "Привет, мир! Это тест UTF-8.";
+        final byte[] allBytes = allMessage.getBytes(StandardCharsets.UTF_8);
+        final Map<Integer, Integer> testCases = new HashMap<>();
+        testCases.put(5, 5);
+        testCases.put(allMessage.length(), allMessage.length());
+        testCases.put(Integer.MAX_VALUE, allMessage.length());
+
+        for (final Map.Entry<Integer, Integer> tc : testCases.entrySet()) {
+            final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+            final String string = EntityUtils.toString(entity, StandardCharsets.UTF_8, tc.getKey());
+            Assertions.assertNotNull(string);
+            Assertions.assertEquals(tc.getValue().intValue(), string.length());
+            Assertions.assertEquals(allMessage.substring(0, tc.getValue()), string);
+        }
+    }
+
+    @Test
+    void testParseMaxStreamLength() throws Exception {
+        final String content = "Name1=Value1&Name2=Value2&Name3=Value3";
+        final StringEntity entity = new StringEntity(content, ContentType.APPLICATION_FORM_URLENCODED);
+
+        // maxStreamLength is set to 15, which corresponds to "Name1=Value1&Na"
+        final List<NameValuePair> result = EntityUtils.parse(entity, 15);
+        
+        Assertions.assertEquals(2, result.size());
+        assertNameValuePair(result.get(0), "Name1", "Value1");
+        assertNameValuePair(result.get(1), "Na", null);
     }
 
 }
