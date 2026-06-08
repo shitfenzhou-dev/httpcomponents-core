@@ -331,4 +331,205 @@ class TestTimeValue {
         Assertions.assertThrows(NullPointerException.class, () -> tv1.compareTo(null));
     }
 
+    // --- Compact format tests ---
+
+    @Test
+    void testParseCompactAllUnits() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofNanoseconds(100), TimeValue.parse("100ns"));
+        Assertions.assertEquals(TimeValue.ofNanoseconds(100), TimeValue.parse("100 ns"));
+        Assertions.assertEquals(TimeValue.ofMicroseconds(100), TimeValue.parse("100us"));
+        Assertions.assertEquals(TimeValue.ofMicroseconds(100), TimeValue.parse("100 us"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250ms"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250 ms"));
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("30s"));
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("30 s"));
+        Assertions.assertEquals(TimeValue.ofMinutes(5), TimeValue.parse("5m"));
+        Assertions.assertEquals(TimeValue.ofMinutes(5), TimeValue.parse("5 m"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2h"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2 h"));
+        Assertions.assertEquals(TimeValue.ofDays(1), TimeValue.parse("1d"));
+        Assertions.assertEquals(TimeValue.ofDays(1), TimeValue.parse("1 d"));
+    }
+
+    @Test
+    void testParseCompactCaseInsensitive() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250MS"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250Ms"));
+        Assertions.assertEquals(TimeValue.ofDays(5), TimeValue.parse("5D"));
+        Assertions.assertEquals(TimeValue.ofDays(5), TimeValue.parse("5d"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2H"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2 h"));
+    }
+
+    @Test
+    void testParseCompactSigns() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("+30s"));
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("+30 s"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(-1), TimeValue.parse("-1ms"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(-1), TimeValue.parse("-1 ms"));
+        Assertions.assertEquals(TimeValue.ofNanoseconds(-100), TimeValue.parse("-100ns"));
+        Assertions.assertEquals(TimeValue.ofDays(-1), TimeValue.parse("-1d"));
+    }
+
+    // --- Legacy format regression tests ---
+
+    @Test
+    void testParseLegacyRegression() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofSeconds(1), TimeValue.parse("1 SECOND"));
+        Assertions.assertEquals(TimeValue.ofSeconds(1), TimeValue.parse("1 SECONDS"));
+        Assertions.assertEquals(TimeValue.ofSeconds(1), TimeValue.parse("1 Seconds"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(1), TimeValue.parse("1 MILLISECOND"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(1), TimeValue.parse("1 MILLISECONDS"));
+        Assertions.assertEquals(TimeValue.ofMinutes(1), TimeValue.parse("1 MINUTE"));
+        Assertions.assertEquals(TimeValue.ofMinutes(1), TimeValue.parse("1 M"));
+        Assertions.assertEquals(TimeValue.ofSeconds(Long.MAX_VALUE), TimeValue.parse("9223372036854775807 SECONDS"));
+    }
+
+    // --- Round-trip tests ---
+
+    @Test
+    void testParseRoundTrip() throws ParseException {
+        final TimeValue[] values = {
+                TimeValue.ofNanoseconds(1),
+                TimeValue.ofMicroseconds(1),
+                TimeValue.ofMilliseconds(1),
+                TimeValue.ofSeconds(1),
+                TimeValue.ofMinutes(1),
+                TimeValue.ofHours(1),
+                TimeValue.ofDays(1),
+                TimeValue.ofNanoseconds(999),
+                TimeValue.ofMilliseconds(250),
+                TimeValue.ofSeconds(3661),
+                TimeValue.ofMinutes(90),
+                TimeValue.ofHours(48),
+                TimeValue.ofDays(365),
+                TimeValue.ofSeconds(Long.MAX_VALUE),
+                TimeValue.ofNanoseconds(Long.MAX_VALUE),
+                TimeValue.ofMilliseconds(Long.MIN_VALUE),
+        };
+        for (final TimeValue tv : values) {
+            final TimeValue parsed = TimeValue.parse(tv.toString());
+            Assertions.assertEquals(tv, parsed, "Round-trip failed for: " + tv);
+        }
+    }
+
+    // --- ISO-8601 duration tests ---
+
+    @Test
+    void testParseISO8601() throws ParseException {
+        // PT0.25S = 250ms
+        final TimeValue pt025s = TimeValue.parse("PT0.25S");
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), pt025s);
+        Assertions.assertEquals(Duration.ofMillis(250), pt025s.toDuration());
+
+        // PT0.000001S = 1us
+        final TimeValue pt000001s = TimeValue.parse("PT0.000001S");
+        Assertions.assertEquals(TimeValue.ofMicroseconds(1), pt000001s);
+        Assertions.assertEquals(Duration.ofNanos(1000), pt000001s.toDuration());
+
+        // PT2H = 2 hours
+        final TimeValue pt2h = TimeValue.parse("PT2H");
+        Assertions.assertEquals(TimeValue.ofHours(2), pt2h);
+        Assertions.assertEquals(Duration.ofHours(2), pt2h.toDuration());
+
+        // PT15M = 15 minutes
+        final TimeValue pt15m = TimeValue.parse("PT15M");
+        Assertions.assertEquals(TimeValue.ofMinutes(15), pt15m);
+        Assertions.assertEquals(Duration.ofMinutes(15), pt15m.toDuration());
+
+        // P1D = 1 day
+        final TimeValue p1d = TimeValue.parse("P1D");
+        Assertions.assertEquals(TimeValue.ofDays(1), p1d);
+        Assertions.assertEquals(Duration.ofDays(1), p1d.toDuration());
+
+        // PT1H30M = 90 minutes (coarsest lossless unit)
+        final TimeValue pt1h30m = TimeValue.parse("PT1H30M");
+        Assertions.assertEquals(TimeValue.ofMinutes(90), pt1h30m);
+        Assertions.assertEquals(Duration.ofMinutes(90), pt1h30m.toDuration());
+    }
+
+    @Test
+    void testParseISO8601Complex() throws ParseException {
+        // PT1H30M20S = 5420 seconds
+        final TimeValue complex = TimeValue.parse("PT1H30M20S");
+        Assertions.assertEquals(TimeValue.ofSeconds(5420), complex);
+        Assertions.assertEquals(Duration.ofSeconds(5420), complex.toDuration());
+
+        // P1DT2H = 26 hours
+        final TimeValue p1dt2h = TimeValue.parse("P1DT2H");
+        Assertions.assertEquals(TimeValue.ofHours(26), p1dt2h);
+        Assertions.assertEquals(Duration.ofHours(26), p1dt2h.toDuration());
+    }
+
+    // --- Long boundary tests ---
+
+    @Test
+    void testParseLongBoundary() throws ParseException {
+        final TimeValue maxNs = TimeValue.parse("9223372036854775807ns");
+        Assertions.assertEquals(Long.MAX_VALUE, maxNs.getDuration());
+        Assertions.assertEquals(TimeUnit.NANOSECONDS, maxNs.getTimeUnit());
+
+        final TimeValue minMs = TimeValue.parse("-9223372036854775808ms");
+        Assertions.assertEquals(Long.MIN_VALUE, minMs.getDuration());
+        Assertions.assertEquals(TimeUnit.MILLISECONDS, minMs.getTimeUnit());
+    }
+
+    // --- Invalid input tests ---
+
+    @Test
+    void testParseInvalidEmpty() {
+        assertParseThrows("");
+        assertParseThrows("   ");
+    }
+
+    @Test
+    void testParseInvalidMissingUnit() {
+        assertParseThrows("12");
+    }
+
+    @Test
+    void testParseInvalidMissingNumber() {
+        assertParseThrows("ms");
+    }
+
+    @Test
+    void testParseInvalidUnknownUnit() {
+        assertParseThrows("12 fortnight");
+    }
+
+    @Test
+    void testParseInvalidNonNumeric() {
+        assertParseThrows("abc ms");
+    }
+
+    @Test
+    void testParseInvalidISO8601() {
+        assertParseThrows("PT-nope");
+    }
+
+    @Test
+    void testParseInvalidDecimalWithLegacyUnit() {
+        assertParseThrows("1.5 ms");
+    }
+
+    @Test
+    void testParseInvalidISO8601Overflow() {
+        assertParseThrows("PT9223372036854775808S");
+    }
+
+    private void assertParseThrows(final String input) {
+        Assertions.assertThrows(Exception.class, () -> TimeValue.parse(input),
+                "Expected exception for input: '" + input + "'");
+    }
+
+    // --- toString stability ---
+
+    @Test
+    void testToStringStability() throws ParseException {
+        Assertions.assertEquals("1 SECONDS", TimeValue.parse("1s").toString());
+        Assertions.assertEquals("250 MILLISECONDS", TimeValue.parse("250ms").toString());
+        Assertions.assertEquals("90 MINUTES", TimeValue.parse("PT1H30M").toString());
+        Assertions.assertEquals("2 HOURS", TimeValue.parse("PT2H").toString());
+    }
+
 }

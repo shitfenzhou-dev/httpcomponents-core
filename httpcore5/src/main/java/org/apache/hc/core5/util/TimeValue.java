@@ -29,10 +29,13 @@ package org.apache.hc.core5.util;
 
 import java.text.ParseException;
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
@@ -236,6 +239,87 @@ public class TimeValue implements Comparable<TimeValue> {
         }
     }
 
+    private static final Pattern COMPACT_PATTERN = Pattern.compile(
+            "^([+-]?\\d+)\\s*(ns|us|ms|s|m|h|d)$", Pattern.CASE_INSENSITIVE);
+
+    private static final String SUPPORTED_FORMATS_HINT =
+            "Supported formats: '<number> <unit>' (e.g. '1 SECOND'), compact (e.g. '250ms', '2 h'), " +
+            "or ISO-8601 duration (e.g. 'PT2H', 'PT1H30M'). Units: ns, us, ms, s, m, h, d, " +
+            "NANOSECONDS, MICROSECONDS, MILLISECONDS, SECONDS, MINUTES, HOURS, DAYS.";
+
+    private static TimeUnit parseCompactUnit(final String unit) {
+        switch (unit.toLowerCase(Locale.ROOT)) {
+            case "ns": return TimeUnit.NANOSECONDS;
+            case "us": return TimeUnit.MICROSECONDS;
+            case "ms": return TimeUnit.MILLISECONDS;
+            case "s":  return TimeUnit.SECONDS;
+            case "m":  return TimeUnit.MINUTES;
+            case "h":  return TimeUnit.HOURS;
+            case "d":  return TimeUnit.DAYS;
+            default:   return null;
+        }
+    }
+
+    private static TimeValue parseCompact(final String value) throws ParseException {
+        final Matcher m = COMPACT_PATTERN.matcher(value);
+        if (!m.matches()) {
+            return null;
+        }
+        final long duration;
+        try {
+            duration = Long.parseLong(m.group(1));
+        } catch (final NumberFormatException e) {
+            throw new ParseException(
+                    String.format("Invalid number in compact format '%s'. %s", value, SUPPORTED_FORMATS_HINT), 0);
+        }
+        final TimeUnit timeUnit = parseCompactUnit(m.group(2));
+        return TimeValue.of(duration, timeUnit);
+    }
+
+    private static TimeValue parseLegacy(final String value) throws ParseException {
+        final String split[] = value.trim().split("\\s+");
+        if (split.length < 2) {
+            throw new IllegalArgumentException(
+                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s. %s",
+                            value, SUPPORTED_FORMATS_HINT));
+        }
+        final String clean0 = split[0].trim();
+        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
+        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
+        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+    }
+
+    private static TimeValue findCoarsestUnit(final Duration duration) {
+        final long totalNanos;
+        try {
+            totalNanos = duration.toNanos();
+        } catch (final ArithmeticException e) {
+            return TimeValue.of(duration.getSeconds(), TimeUnit.SECONDS);
+        }
+        final TimeUnit[] unitsFromCoarsest = {
+                TimeUnit.DAYS, TimeUnit.HOURS, TimeUnit.MINUTES, TimeUnit.SECONDS,
+                TimeUnit.MILLISECONDS, TimeUnit.MICROSECONDS, TimeUnit.NANOSECONDS
+        };
+        for (final TimeUnit unit : unitsFromCoarsest) {
+            final long converted = unit.convert(totalNanos, TimeUnit.NANOSECONDS);
+            if (TimeUnit.NANOSECONDS.convert(converted, unit) == totalNanos) {
+                return TimeValue.of(converted, unit);
+            }
+        }
+        return TimeValue.of(duration.getSeconds(), TimeUnit.SECONDS);
+    }
+
+    private static TimeValue parseISO8601(final String value) throws ParseException {
+        final Duration duration;
+        try {
+            duration = Duration.parse(value);
+        } catch (final DateTimeParseException e) {
+            throw new ParseException(
+                    String.format("Invalid ISO-8601 duration '%s'. %s", value, SUPPORTED_FORMATS_HINT), 0);
+        }
+        return findCoarsestUnit(duration);
+    }
+
     /**
      * Parses a TimeValue in the format {@code <Long><SPACE><TimeUnit>}, for example {@code "1200 MILLISECONDS"}.
      * <p>
@@ -245,24 +329,31 @@ public class TimeValue implements Comparable<TimeValue> {
      * <li>{@code "1200 MILLISECONDS"}.</li>
      * <li>{@code " 1200 MILLISECONDS "}, spaces are ignored.</li>
      * <li>{@code "1 MINUTE"}, singular units.</li>
-     * <li></li>
+     * <li>{@code "250ms"}, compact format with short units (ns, us, ms, s, m, h, d).</li>
+     * <li>{@code "2 h"}, compact format with space.</li>
+     * <li>{@code "+30s"}, compact format with sign.</li>
+     * <li>{@code "PT2H"}, ISO-8601 duration format.</li>
+     * <li>{@code "PT1H30M"}, ISO-8601 duration format (returns 90 MINUTES).</li>
      * </ul>
-     *
      *
      * @param value the TimeValue to parse
      * @return a new TimeValue
-     * @throws ParseException if the number cannot be parsed
+     * @throws ParseException if the value cannot be parsed
      */
     public static TimeValue parse(final String value) throws ParseException {
-        final String split[] = value.trim().split("\\s+");
-        if (split.length < 2) {
+        if (value == null || value.trim().isEmpty()) {
             throw new IllegalArgumentException(
-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
+                    String.format("Empty or blank input. %s", SUPPORTED_FORMATS_HINT));
         }
-        final String clean0 = split[0].trim();
-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+        final String trimmed = value.trim();
+        TimeValue result = parseCompact(trimmed);
+        if (result != null) {
+            return result;
+        }
+        if (trimmed.startsWith("P")) {
+            return parseISO8601(trimmed);
+        }
+        return parseLegacy(trimmed);
     }
 
     private final long duration;
