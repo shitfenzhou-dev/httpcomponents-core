@@ -32,6 +32,7 @@ import java.nio.ByteBuffer;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.util.TokenBuffer;
 
@@ -39,6 +40,7 @@ import org.apache.hc.core5.jackson2.JsonAsyncTokenizer;
 import org.apache.hc.core5.jackson2.JsonResultSink;
 import org.apache.hc.core5.jackson2.TokenBufferAssembler;
 import org.apache.hc.core5.jackson2.TopLevelArrayTokenFilter;
+import org.apache.hc.core5.util.Args;
 
 /**
  * Event-driven bulk JSON reader that can read arrays of objects while buffering only a single
@@ -52,11 +54,25 @@ public final class JsonBulkArrayReader {
     private final JsonAsyncTokenizer jsonTokenizer;
 
     public JsonBulkArrayReader(final ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-        this.jsonTokenizer = new JsonAsyncTokenizer(objectMapper.getFactory());
+        this.objectMapper = Args.notNull(objectMapper, "Object mapper");
+        this.jsonTokenizer = new JsonAsyncTokenizer(this.objectMapper.getFactory());
+    }
+
+    public <T> void initialize(final Class<T> clazz, final JsonResultSink<T> resultSink) throws IOException {
+        initialize(this.objectMapper.getTypeFactory().constructType(Args.notNull(clazz, "Class")), resultSink);
     }
 
     public <T> void initialize(final TypeReference<T> typeReference, final JsonResultSink<T> resultSink) throws IOException {
+        initialize(this.objectMapper.getTypeFactory().constructType(Args.notNull(typeReference, "Type reference")), resultSink);
+    }
+
+    private <T> void initialize(final JavaType javaType, final JsonResultSink<T> resultSink) throws IOException {
+        final JsonResultSink<T> checkedResultSink = Args.notNull(resultSink, "Result sink");
+        initialize(jsonParser -> objectMapper.readValue(jsonParser, javaType), checkedResultSink);
+    }
+
+    private <T> void initialize(final ReadJsonValue<T> readJsonValue, final JsonResultSink<T> resultSink) throws IOException {
+        final ReadJsonValue<T> checkedReadJsonValue = Args.notNull(readJsonValue, "Json value reader");
         this.jsonTokenizer.initialize(new TopLevelArrayTokenFilter(new TokenBufferAssembler(new JsonResultSink<TokenBuffer>() {
 
             @Override
@@ -68,7 +84,7 @@ public final class JsonBulkArrayReader {
             public void accept(final TokenBuffer tokenBuffer) {
                 try {
                     final JsonParser jsonParser = tokenBuffer != null ? tokenBuffer.asParserOnFirstToken() : null;
-                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, typeReference) : null;
+                    final T result = jsonParser != null ? checkedReadJsonValue.readValue(jsonParser) : null;
                     if (result != null) {
                         resultSink.accept(result);
                     }
@@ -95,6 +111,11 @@ public final class JsonBulkArrayReader {
 
     public void streamEnd() throws IOException {
         jsonTokenizer.streamEnd();
+    }
+
+    @FunctionalInterface
+    private interface ReadJsonValue<T> {
+        T readValue(JsonParser jsonParser) throws IOException;
     }
 
 }
