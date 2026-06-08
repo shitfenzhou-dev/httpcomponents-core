@@ -1165,7 +1165,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         final int promisedStreamId = promisedStream.getId();
 
         if (!frame.isFlagSet(FrameFlag.END_HEADERS)) {
-            continuation = new Continuation(promisedStreamId, frame.getType(), true,
+            continuation = new Continuation(frame.getStreamId() & 0x7fffffff, promisedStreamId, frame.getType(), true,
                     localConfig.getMaxContinuations());
         }
         if (continuation == null) {
@@ -1175,7 +1175,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             }
             promisedStream.consumePromise(headers);
         } else {
-            continuation.copyPayload(payload);
+            continuation.copyInitialPayload(payload);
         }
     }
 
@@ -1204,7 +1204,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         }
         final int streamId = stream.getId();
         if (!frame.isFlagSet(FrameFlag.END_HEADERS)) {
-            continuation = new Continuation(streamId, frame.getType(), frame.isFlagSet(FrameFlag.END_STREAM),
+            continuation = new Continuation(streamId, streamId, frame.getType(), frame.isFlagSet(FrameFlag.END_STREAM),
                     localConfig.getMaxContinuations());
         }
         final ByteBuffer payload = frame.getPayloadContent();
@@ -1226,7 +1226,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             recordPriorityFromHeaders(stream, headers);
             stream.consumeHeader(headers, frame.isFlagSet(FrameFlag.END_STREAM));
         } else {
-            continuation.copyPayload(payload);
+            continuation.copyInitialPayload(payload);
         }
     }
 
@@ -1234,19 +1234,21 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         if (stream.isRemoteClosed()) {
             throw new H2StreamResetException(H2Error.STREAM_CLOSED, "Stream already closed");
         }
-        final int streamId = frame.getStreamId() & 0x7fffffff;
         final ByteBuffer payload = frame.getPayload();
         continuation.copyPayload(payload);
         if (frame.isFlagSet(FrameFlag.END_HEADERS)) {
-            final List<Header> headers = decodeHeaders(continuation.getContent());
+            final Continuation continuationState = continuation;
+            final List<Header> headers = decodeHeaders(continuationState.getContent());
+            final H2Stream headerStream = continuationState.messageStreamId == stream.getId() ? stream
+                    : streams.lookupValid(continuationState.messageStreamId);
             if (streamListener != null) {
-                streamListener.onHeaderInput(this, streamId, headers);
+                streamListener.onHeaderInput(this, continuationState.messageStreamId, headers);
             }
-            recordPriorityFromHeaders(stream, headers);
-            if (continuation.type == FrameType.PUSH_PROMISE.getValue()) {
-                stream.consumePromise(headers);
+            if (continuationState.type == FrameType.PUSH_PROMISE.getValue()) {
+                headerStream.consumePromise(headers);
             } else {
-                stream.consumeHeader(headers, continuation.endStream);
+                recordPriorityFromHeaders(headerStream, headers);
+                headerStream.consumeHeader(headers, continuationState.endStream);
             }
             continuation = null;
         }
@@ -1452,33 +1454,44 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
     private static class Continuation {
 
         final int streamId;
+        final int messageStreamId;
         final int type;
         final boolean endStream;
         final ByteArrayBuffer headerBuffer;
-        final int maxContinuation;
-        final boolean enforceMacContinuations;
+        final int maxContinuations;
+        final boolean enforceMaxContinuations;
 
         private int count;
 
-        private Continuation(final int streamId, final int type, final boolean endStream, final int maxContinuation) {
+        private Continuation(final int streamId, final int messageStreamId, final int type, final boolean endStream,
+                final int maxContinuations) {
             this.streamId = streamId;
+            this.messageStreamId = messageStreamId;
             this.type = type;
             this.endStream = endStream;
-            this.maxContinuation = maxContinuation;
-            this.enforceMacContinuations = maxContinuation < Integer.MAX_VALUE;
+            this.maxContinuations = maxContinuations;
+            this.enforceMaxContinuations = maxContinuations > 0 && maxContinuations < Integer.MAX_VALUE;
             this.headerBuffer = new ByteArrayBuffer(1024);
         }
 
+        void copyInitialPayload(final ByteBuffer payload) {
+            appendPayload(payload);
+        }
+
         void copyPayload(final ByteBuffer payload) throws H2ConnectionException {
-            if (payload == null) {
-                return;
-            }
-            if (enforceMacContinuations && count > maxContinuation) {
+            if (enforceMaxContinuations && count >= maxContinuations) {
                 throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
             }
             count++;
-            final int originalLength = headerBuffer.length();
+            appendPayload(payload);
+        }
+
+        private void appendPayload(final ByteBuffer payload) {
+            if (payload == null) {
+                return;
+            }
             final int toCopy = payload.remaining();
+            final int originalLength = headerBuffer.length();
             headerBuffer.ensureCapacity(toCopy);
             payload.get(headerBuffer.array(), originalLength, toCopy);
             headerBuffer.setLength(originalLength + toCopy);

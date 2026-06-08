@@ -1,0 +1,499 @@
+diff --git a/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/config/H2Config.java b/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/config/H2Config.java
+index 89b538860..3cca1b505 100644
+--- a/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/config/H2Config.java
++++ b/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/config/H2Config.java
+@@ -142,7 +142,8 @@ public static H2Config.Builder copy(final H2Config config) {
+                 .setInitialWindowSize(config.getInitialWindowSize())
+                 .setMaxFrameSize(config.getMaxFrameSize())
+                 .setMaxHeaderListSize(config.getMaxHeaderListSize())
+-                .setCompressionEnabled(config.isCompressionEnabled());
++                .setCompressionEnabled(config.isCompressionEnabled())
++                .setMaxContinuations(config.getMaxContinuations());
+     }
+ 
+     public static class Builder {
+diff --git a/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/impl/nio/AbstractH2StreamMultiplexer.java b/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/impl/nio/AbstractH2StreamMultiplexer.java
+index 2b302681a..fd9f1eba6 100644
+--- a/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/impl/nio/AbstractH2StreamMultiplexer.java
++++ b/httpcore5-h2/src/main/java/org/apache/hc/core5/http2/impl/nio/AbstractH2StreamMultiplexer.java
+@@ -1165,7 +1165,7 @@ private void consumePushPromiseFrame(final RawFrame frame, final ByteBuffer payl
+         final int promisedStreamId = promisedStream.getId();
+ 
+         if (!frame.isFlagSet(FrameFlag.END_HEADERS)) {
+-            continuation = new Continuation(promisedStreamId, frame.getType(), true,
++            continuation = new Continuation(frame.getStreamId() & 0x7fffffff, promisedStreamId, frame.getType(), true,
+                     localConfig.getMaxContinuations());
+         }
+         if (continuation == null) {
+@@ -1175,7 +1175,7 @@ private void consumePushPromiseFrame(final RawFrame frame, final ByteBuffer payl
+             }
+             promisedStream.consumePromise(headers);
+         } else {
+-            continuation.copyPayload(payload);
++            continuation.copyInitialPayload(payload);
+         }
+     }
+ 
+@@ -1204,7 +1204,7 @@ private void consumeHeaderFrame(final RawFrame frame, final H2Stream stream) thr
+         }
+         final int streamId = stream.getId();
+         if (!frame.isFlagSet(FrameFlag.END_HEADERS)) {
+-            continuation = new Continuation(streamId, frame.getType(), frame.isFlagSet(FrameFlag.END_STREAM),
++            continuation = new Continuation(streamId, streamId, frame.getType(), frame.isFlagSet(FrameFlag.END_STREAM),
+                     localConfig.getMaxContinuations());
+         }
+         final ByteBuffer payload = frame.getPayloadContent();
+@@ -1226,7 +1226,7 @@ private void consumeHeaderFrame(final RawFrame frame, final H2Stream stream) thr
+             recordPriorityFromHeaders(stream, headers);
+             stream.consumeHeader(headers, frame.isFlagSet(FrameFlag.END_STREAM));
+         } else {
+-            continuation.copyPayload(payload);
++            continuation.copyInitialPayload(payload);
+         }
+     }
+ 
+@@ -1234,19 +1234,21 @@ private void consumeContinuationFrame(final RawFrame frame, final H2Stream strea
+         if (stream.isRemoteClosed()) {
+             throw new H2StreamResetException(H2Error.STREAM_CLOSED, "Stream already closed");
+         }
+-        final int streamId = frame.getStreamId() & 0x7fffffff;
+         final ByteBuffer payload = frame.getPayload();
+         continuation.copyPayload(payload);
+         if (frame.isFlagSet(FrameFlag.END_HEADERS)) {
+-            final List<Header> headers = decodeHeaders(continuation.getContent());
++            final Continuation continuationState = continuation;
++            final List<Header> headers = decodeHeaders(continuationState.getContent());
++            final H2Stream headerStream = continuationState.messageStreamId == stream.getId() ? stream
++                    : streams.lookupValid(continuationState.messageStreamId);
+             if (streamListener != null) {
+-                streamListener.onHeaderInput(this, streamId, headers);
++                streamListener.onHeaderInput(this, continuationState.messageStreamId, headers);
+             }
+-            recordPriorityFromHeaders(stream, headers);
+-            if (continuation.type == FrameType.PUSH_PROMISE.getValue()) {
+-                stream.consumePromise(headers);
++            if (continuationState.type == FrameType.PUSH_PROMISE.getValue()) {
++                headerStream.consumePromise(headers);
+             } else {
+-                stream.consumeHeader(headers, continuation.endStream);
++                recordPriorityFromHeaders(headerStream, headers);
++                headerStream.consumeHeader(headers, continuationState.endStream);
+             }
+             continuation = null;
+         }
+@@ -1452,33 +1454,44 @@ void appendState(final StringBuilder buf) {
+     private static class Continuation {
+ 
+         final int streamId;
++        final int messageStreamId;
+         final int type;
+         final boolean endStream;
+         final ByteArrayBuffer headerBuffer;
+-        final int maxContinuation;
+-        final boolean enforceMacContinuations;
++        final int maxContinuations;
++        final boolean enforceMaxContinuations;
+ 
+         private int count;
+ 
+-        private Continuation(final int streamId, final int type, final boolean endStream, final int maxContinuation) {
++        private Continuation(final int streamId, final int messageStreamId, final int type, final boolean endStream,
++                final int maxContinuations) {
+             this.streamId = streamId;
++            this.messageStreamId = messageStreamId;
+             this.type = type;
+             this.endStream = endStream;
+-            this.maxContinuation = maxContinuation;
+-            this.enforceMacContinuations = maxContinuation < Integer.MAX_VALUE;
++            this.maxContinuations = maxContinuations;
++            this.enforceMaxContinuations = maxContinuations > 0 && maxContinuations < Integer.MAX_VALUE;
+             this.headerBuffer = new ByteArrayBuffer(1024);
+         }
+ 
++        void copyInitialPayload(final ByteBuffer payload) {
++            appendPayload(payload);
++        }
++
+         void copyPayload(final ByteBuffer payload) throws H2ConnectionException {
+-            if (payload == null) {
+-                return;
+-            }
+-            if (enforceMacContinuations && count > maxContinuation) {
++            if (enforceMaxContinuations && count >= maxContinuations) {
+                 throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
+             }
+             count++;
+-            final int originalLength = headerBuffer.length();
++            appendPayload(payload);
++        }
++
++        private void appendPayload(final ByteBuffer payload) {
++            if (payload == null) {
++                return;
++            }
+             final int toCopy = payload.remaining();
++            final int originalLength = headerBuffer.length();
+             headerBuffer.ensureCapacity(toCopy);
+             payload.get(headerBuffer.array(), originalLength, toCopy);
+             headerBuffer.setLength(originalLength + toCopy);
+diff --git a/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/config/H2ConfigTest.java b/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/config/H2ConfigTest.java
+index a6a2859d5..4f7fc364d 100644
+--- a/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/config/H2ConfigTest.java
++++ b/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/config/H2ConfigTest.java
+@@ -30,6 +30,7 @@
+ import static org.junit.jupiter.api.Assertions.assertAll;
+ import static org.junit.jupiter.api.Assertions.assertEquals;
+ import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
+ import static org.junit.jupiter.api.Assertions.assertTrue;
+ 
+ import org.junit.jupiter.api.Test;
+@@ -38,7 +39,6 @@ class H2ConfigTest {
+ 
+     @Test
+     void builder() {
+-        // Create and start requester
+         final H2Config h2Config = H2Config.custom()
+                 .setPushEnabled(false)
+                 .build();
+@@ -47,7 +47,6 @@ void builder() {
+ 
+     @Test
+     void checkValues() {
+-        // Create and start requester
+         final H2Config h2Config = H2Config.custom()
+                 .setHeaderTableSize(1)
+                 .setMaxConcurrentStreams(1)
+@@ -63,28 +62,59 @@ void checkValues() {
+         assertTrue(h2Config.isCompressionEnabled());
+     }
+ 
++    @Test
++    void copyRetainsMaxContinuations() {
++        final H2Config zeroLimit = H2Config.custom()
++                .setMaxContinuations(0)
++                .build();
++        final H2Config copiedZeroLimit = H2Config.copy(zeroLimit).build();
++
++        final H2Config positiveLimit = H2Config.custom()
++                .setMaxContinuations(7)
++                .build();
++        final H2Config copiedPositiveLimit = H2Config.copy(positiveLimit).build();
++
++        assertAll(
++                () -> assertEquals(0, copiedZeroLimit.getMaxContinuations()),
++                () -> assertEquals(7, copiedPositiveLimit.getMaxContinuations())
++        );
++    }
++
+     @Test
+     void copy() {
+-        // Create and start requester
+         final H2Config h2Config = H2Config.custom()
+                 .setHeaderTableSize(1)
+                 .setMaxConcurrentStreams(1)
+                 .setMaxFrameSize(16384)
+                 .setPushEnabled(true)
+                 .setCompressionEnabled(true)
++                .setMaxContinuations(9)
+                 .build();
+ 
+-        final H2Config.Builder builder = H2Config.copy(h2Config);
+-        final H2Config h2Config2 = builder.build();
++        final H2Config h2Config2 = H2Config.copy(h2Config).build();
+ 
+         assertAll(
+                 () -> assertEquals(h2Config.getHeaderTableSize(), h2Config2.getHeaderTableSize()),
+                 () -> assertEquals(h2Config.getInitialWindowSize(), h2Config2.getInitialWindowSize()),
+                 () -> assertEquals(h2Config.getMaxConcurrentStreams(), h2Config2.getMaxConcurrentStreams()),
+                 () -> assertEquals(h2Config.getMaxFrameSize(), h2Config2.getMaxFrameSize()),
+-                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize())
++                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize()),
++                () -> assertEquals(h2Config.getMaxContinuations(), h2Config2.getMaxContinuations())
+         );
++    }
++
++    @Test
++    void maxContinuationsMustNotBeNegative() {
++        assertThrows(IllegalArgumentException.class, () -> H2Config.custom().setMaxContinuations(-1));
++    }
++
++    @Test
++    void toStringContainsMaxContinuations() {
++        final H2Config h2Config = H2Config.custom()
++                .setMaxContinuations(7)
++                .build();
+ 
++        assertTrue(h2Config.toString().contains("maxContinuations=7"));
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/impl/nio/TestAbstractH2StreamMultiplexer.java b/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/impl/nio/TestAbstractH2StreamMultiplexer.java
+index 59033864a..a3e60fabb 100644
+--- a/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/impl/nio/TestAbstractH2StreamMultiplexer.java
++++ b/httpcore5-h2/src/test/java/org/apache/hc/core5/http2/impl/nio/TestAbstractH2StreamMultiplexer.java
+@@ -661,54 +661,38 @@ void testContinuationAfterEndOfStream() throws Exception {
+ 
+ 
+     @Test
+-    void testInputHeaderContinuationFramesNoLimit() throws Exception {
++    void testInputHeaderContinuationFramesZeroMeansNoLimit() throws Exception {
+         final H2Config h2Config = H2Config.custom()
+-                .setMaxContinuations(Integer.MAX_VALUE)
++                .setMaxContinuations(0)
+                 .build();
+-
+-        final ByteArrayBuffer headerBuf = new ByteArrayBuffer(19);
+-        final HPackEncoder encoder = new HPackEncoder(H2Config.INIT.getHeaderTableSize(), CharCodingSupport.createEncoder(CharCodingConfig.DEFAULT));
+-        final List<Header> headers = new ArrayList<>();
+-        headers.add(new BasicHeader(":status", "200"));
+-        for (int i = 1; i <= 100; i++) {
+-            headers.add(new BasicHeader("test-header-key-" + i, "value-" + i));
+-        }
+-        encoder.encodeHeaders(headerBuf, headers, h2Config.isCompressionEnabled());
++        final ByteArrayBuffer headerBuf = createLargeResponseHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
+ 
+         Assertions.assertTrue(headerBuf.length() > 750);
+ 
+-        final AbstractH2StreamMultiplexer streamMultiplexer = new H2StreamMultiplexerImpl(
+-                protocolIOSession,
+-                FRAME_FACTORY,
+-                StreamIdGenerator.ODD,
+-                httpProcessor,
+-                CharCodingConfig.DEFAULT,
+-                h2Config,
+-                h2StreamListener,
+-                () -> streamHandler);
+-
+-        final WritableByteChannelMock writableChannel = new WritableByteChannelMock(1024);
+-        final FrameOutputBuffer outBuffer = new FrameOutputBuffer(16 * 1024);
+-
+-        final RawFrame headerFrame = FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false);
+-        outBuffer.write(headerFrame, writableChannel);
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 250, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 500, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true));
+ 
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++        Mockito.verify(streamHandler).consumeHeader(headersCaptor.capture(), ArgumentMatchers.eq(false));
++        Assertions.assertFalse(headersCaptor.getValue().isEmpty());
++    }
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame1 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 250, 250), false);
+-        outBuffer.write(continuationFrame1, writableChannel);
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++    @Test
++    void testInputHeaderContinuationFramesNoLimit() throws Exception {
++        final H2Config h2Config = H2Config.custom()
++                .setMaxContinuations(Integer.MAX_VALUE)
++                .build();
++        final ByteArrayBuffer headerBuf = createLargeResponseHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame2 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 500, 250), false);
+-        outBuffer.write(continuationFrame2, writableChannel);
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++        Assertions.assertTrue(headerBuf.length() > 750);
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame3 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true);
+-        outBuffer.write(continuationFrame3, writableChannel);
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 250, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 500, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true));
+ 
+         Mockito.verify(streamHandler).consumeHeader(headersCaptor.capture(), ArgumentMatchers.eq(false));
+         Assertions.assertFalse(headersCaptor.getValue().isEmpty());
+@@ -719,52 +703,88 @@ void testInputHeaderContinuationFramesMaxLimit() throws Exception {
+         final H2Config h2Config = H2Config.custom()
+                 .setMaxContinuations(2)
+                 .build();
+-
+-        final ByteArrayBuffer headerBuf = new ByteArrayBuffer(19);
+-        final HPackEncoder encoder = new HPackEncoder(H2Config.INIT.getHeaderTableSize(), CharCodingSupport.createEncoder(CharCodingConfig.DEFAULT));
+-        final List<Header> headers = new ArrayList<>();
+-        headers.add(new BasicHeader(":status", "200"));
+-        for (int i = 1; i <= 100; i++) {
+-            headers.add(new BasicHeader("test-header-key-" + i, "value-" + i));
+-        }
+-        encoder.encodeHeaders(headerBuf, headers, h2Config.isCompressionEnabled());
++        final ByteArrayBuffer headerBuf = createLargeResponseHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
+ 
+         Assertions.assertTrue(headerBuf.length() > 750);
+ 
+-        final AbstractH2StreamMultiplexer streamMultiplexer = new H2StreamMultiplexerImpl(
+-                protocolIOSession,
+-                FRAME_FACTORY,
+-                StreamIdGenerator.ODD,
+-                httpProcessor,
+-                CharCodingConfig.DEFAULT,
+-                h2Config,
+-                h2StreamListener,
+-                () -> streamHandler);
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 250, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 500, 250), false));
+ 
+-        final WritableByteChannelMock writableChannel = new WritableByteChannelMock(1024);
+-        final FrameOutputBuffer outBuffer = new FrameOutputBuffer(16 * 1024);
++        final H2ConnectionException exception = Assertions.assertThrows(H2ConnectionException.class, () ->
++                feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(2,
++                        ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true)));
+ 
+-        final RawFrame headerFrame = FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false);
+-        outBuffer.write(headerFrame, writableChannel);
++        Assertions.assertEquals(H2Error.ENHANCE_YOUR_CALM, H2Error.getByCode(exception.getCode()));
++        Mockito.verify(streamHandler, Mockito.never())
++                .consumeHeader(ArgumentMatchers.anyList(), ArgumentMatchers.anyBoolean());
++    }
+ 
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++    @Test
++    void testInputHeaderContinuationNullAndEmptyPayloadFramesCountTowardsMaxLimit() throws Exception {
++        final H2Config h2Config = H2Config.custom()
++                .setMaxContinuations(1)
++                .build();
++        final ByteArrayBuffer headerBuf = createLargeResponseHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame1 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 250, 250), false);
+-        outBuffer.write(continuationFrame1, writableChannel);
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++        Assertions.assertTrue(headerBuf.length() > 250);
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame2 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 500, 250), false);
+-        outBuffer.write(continuationFrame2, writableChannel);
+-        streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray()));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createHeaders(2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false, false));
++        feedFrame(streamMultiplexer, new RawFrame(FrameType.CONTINUATION.getValue(), 0, 2, ByteBuffer.allocate(0)));
+ 
+-        writableChannel.reset();
+-        final RawFrame continuationFrame3 = FRAME_FACTORY.createContinuation(2, ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true);
+-        outBuffer.write(continuationFrame3, writableChannel);
++        final H2ConnectionException exception = Assertions.assertThrows(H2ConnectionException.class, () ->
++                feedFrame(streamMultiplexer, new RawFrame(FrameType.CONTINUATION.getValue(),
++                        FrameFlag.END_HEADERS.getValue(), 2, null)));
+ 
+-        Assertions.assertThrows(H2ConnectionException.class, () ->
+-            streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray())));
++        Assertions.assertEquals(H2Error.ENHANCE_YOUR_CALM, H2Error.getByCode(exception.getCode()));
++        Mockito.verify(streamHandler, Mockito.never())
++                .consumeHeader(ArgumentMatchers.anyList(), ArgumentMatchers.anyBoolean());
++    }
++
++    @Test
++    void testInputPushPromiseContinuationFramesZeroMeansNoLimit() throws Exception {
++        final H2Config h2Config = H2Config.custom()
++                .setPushEnabled(true)
++                .setMaxContinuations(0)
++                .build();
++        final ByteArrayBuffer headerBuf = createLargeRequestHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
++
++        streamMultiplexer.createStream(streamMultiplexer.createChannel(1), streamHandler);
++        Assertions.assertTrue(headerBuf.length() > 750);
++
++        feedFrame(streamMultiplexer, createPushPromiseFrame(1, 2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1, ByteBuffer.wrap(headerBuf.array(), 250, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1, ByteBuffer.wrap(headerBuf.array(), 500, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1, ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true));
++
++        Mockito.verify(streamHandler).consumePromise(ArgumentMatchers.anyList());
++    }
++
++    @Test
++    void testInputPushPromiseContinuationFramesMaxLimit() throws Exception {
++        final H2Config h2Config = H2Config.custom()
++                .setPushEnabled(true)
++                .setMaxContinuations(2)
++                .build();
++        final ByteArrayBuffer headerBuf = createLargeRequestHeaderBlock(h2Config);
++        final AbstractH2StreamMultiplexer streamMultiplexer = createMultiplexer(h2Config);
++
++        streamMultiplexer.createStream(streamMultiplexer.createChannel(1), streamHandler);
++        Assertions.assertTrue(headerBuf.length() > 750);
++
++        feedFrame(streamMultiplexer, createPushPromiseFrame(1, 2, ByteBuffer.wrap(headerBuf.array(), 0, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1, ByteBuffer.wrap(headerBuf.array(), 250, 250), false));
++        feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1, ByteBuffer.wrap(headerBuf.array(), 500, 250), false));
++
++        final H2ConnectionException exception = Assertions.assertThrows(H2ConnectionException.class, () ->
++                feedFrame(streamMultiplexer, FRAME_FACTORY.createContinuation(1,
++                        ByteBuffer.wrap(headerBuf.array(), 750, headerBuf.length() - 750), true)));
++
++        Assertions.assertEquals(H2Error.ENHANCE_YOUR_CALM, H2Error.getByCode(exception.getCode()));
++        Mockito.verify(streamHandler, Mockito.never()).consumePromise(ArgumentMatchers.anyList());
+     }
+ 
+     @Test
+@@ -1426,6 +1446,59 @@ void testInputUnknownFrameTypeIgnored() throws Exception {
+ 
+         Assertions.assertDoesNotThrow(() -> streamMultiplexer.onInput(ByteBuffer.wrap(writableChannel.toByteArray())));
+     }
++
++    private AbstractH2StreamMultiplexer createMultiplexer(final H2Config h2Config) {
++        return new H2StreamMultiplexerImpl(
++                protocolIOSession,
++                FRAME_FACTORY,
++                StreamIdGenerator.ODD,
++                httpProcessor,
++                CharCodingConfig.DEFAULT,
++                h2Config,
++                h2StreamListener,
++                () -> streamHandler);
++    }
++
++    private ByteArrayBuffer createLargeResponseHeaderBlock(final H2Config h2Config) throws IOException {
++        final ByteArrayBuffer headerBuf = new ByteArrayBuffer(19);
++        final HPackEncoder encoder = new HPackEncoder(H2Config.INIT.getHeaderTableSize(),
++                CharCodingSupport.createEncoder(CharCodingConfig.DEFAULT));
++        final List<Header> headers = new ArrayList<>();
++        headers.add(new BasicHeader(":status", "200"));
++        for (int i = 1; i <= 100; i++) {
++            headers.add(new BasicHeader("test-header-key-" + i, "value-" + i));
++        }
++        encoder.encodeHeaders(headerBuf, headers, h2Config.isCompressionEnabled());
++        return headerBuf;
++    }
++
++    private ByteArrayBuffer createLargeRequestHeaderBlock(final H2Config h2Config) throws IOException {
++        final ByteArrayBuffer headerBuf = new ByteArrayBuffer(256);
++        final HPackEncoder encoder = new HPackEncoder(H2Config.INIT.getHeaderTableSize(),
++                CharCodingSupport.createEncoder(CharCodingConfig.DEFAULT));
++        final List<Header> headers = new ArrayList<>();
++        headers.add(new BasicHeader(":method", "GET"));
++        headers.add(new BasicHeader(":scheme", "https"));
++        headers.add(new BasicHeader(":authority", "example.test"));
++        headers.add(new BasicHeader(":path", "/pushed"));
++        for (int i = 1; i <= 100; i++) {
++            headers.add(new BasicHeader("test-header-key-" + i, "value-" + i));
++        }
++        encoder.encodeHeaders(headerBuf, headers, h2Config.isCompressionEnabled());
++        return headerBuf;
++    }
++
++    private static RawFrame createPushPromiseFrame(final int streamId, final int promisedStreamId,
++                                                   final ByteBuffer headerPayload, final boolean endHeaders) {
++        final ByteBuffer headerPayloadCopy = headerPayload != null ? headerPayload.duplicate() : ByteBuffer.allocate(0);
++        final ByteBuffer payload = ByteBuffer.allocate(4 + headerPayloadCopy.remaining());
++        payload.putInt(promisedStreamId);
++        payload.put(headerPayloadCopy);
++        payload.flip();
++        return new RawFrame(FrameType.PUSH_PROMISE.getValue(), endHeaders ? FrameFlag.END_HEADERS.getValue() : 0,
++                streamId, payload);
++    }
++
+     private static byte[] encodeFrame(final RawFrame frame) throws IOException {
+         final WritableByteChannelMock writableChannel = new WritableByteChannelMock(256);
+         final FrameOutputBuffer outBuffer = new FrameOutputBuffer(16 * 1024);
