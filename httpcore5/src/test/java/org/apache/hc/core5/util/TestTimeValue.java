@@ -285,6 +285,106 @@ class TestTimeValue {
     }
 
     @Test
+    void testFromStringShortUnits() throws ParseException {
+        // Compact format
+        Assertions.assertEquals(TimeValue.ofNanoseconds(250), TimeValue.parse("250ns"));
+        Assertions.assertEquals(TimeValue.ofMicroseconds(250), TimeValue.parse("250us"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250ms"));
+        Assertions.assertEquals(TimeValue.ofSeconds(250), TimeValue.parse("250s"));
+        Assertions.assertEquals(TimeValue.ofMinutes(250), TimeValue.parse("250m"));
+        Assertions.assertEquals(TimeValue.ofHours(250), TimeValue.parse("250h"));
+        Assertions.assertEquals(TimeValue.ofDays(250), TimeValue.parse("250d"));
+
+        // Space-separated short units
+        Assertions.assertEquals(TimeValue.ofNanoseconds(250), TimeValue.parse("250 ns"));
+        Assertions.assertEquals(TimeValue.ofMicroseconds(250), TimeValue.parse("250 us"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250 ms"));
+        Assertions.assertEquals(TimeValue.ofSeconds(250), TimeValue.parse("250 s"));
+        Assertions.assertEquals(TimeValue.ofMinutes(250), TimeValue.parse("250 m"));
+        Assertions.assertEquals(TimeValue.ofHours(250), TimeValue.parse("250 h"));
+        Assertions.assertEquals(TimeValue.ofDays(250), TimeValue.parse("250 d"));
+
+        // Case-insensitive
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250MS"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250 Ms"));
+        Assertions.assertEquals(TimeValue.ofSeconds(250), TimeValue.parse("250S"));
+        Assertions.assertEquals(TimeValue.ofMinutes(250), TimeValue.parse("250M"));
+        Assertions.assertEquals(TimeValue.ofHours(250), TimeValue.parse("250H"));
+        Assertions.assertEquals(TimeValue.ofDays(250), TimeValue.parse("250D"));
+    }
+
+    @Test
+    void testFromStringWithSign() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofMilliseconds(-1), TimeValue.parse("-1 ms"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(-1), TimeValue.parse("-1ms"));
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("+30 s"));
+        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("+30s"));
+    }
+
+    @Test
+    void testParseRoundTrip() throws ParseException {
+        for (final TimeUnit timeUnit : TimeUnit.values()) {
+            final TimeValue original = TimeValue.of(123, timeUnit);
+            final String str = original.toString();
+            final TimeValue parsed = TimeValue.parse(str);
+            Assertions.assertEquals(original, parsed);
+        }
+    }
+
+    @Test
+    void testFromStringIso8601() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("PT0.25S"));
+        Assertions.assertEquals(TimeValue.ofMicroseconds(1), TimeValue.parse("PT0.000001S"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("PT2H"));
+        Assertions.assertEquals(TimeValue.ofMinutes(15), TimeValue.parse("PT15M"));
+        Assertions.assertEquals(TimeValue.ofDays(1), TimeValue.parse("P1D"));
+        Assertions.assertEquals(TimeValue.ofMinutes(90), TimeValue.parse("PT1H30M"));
+    }
+
+    @Test
+    void testFromStringLongBoundary() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofNanoseconds(Long.MAX_VALUE), TimeValue.parse("9223372036854775807 ns"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(Long.MIN_VALUE), TimeValue.parse("-9223372036854775808 ms"));
+    }
+
+    @Test
+    void testFromStringInvalid() {
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse(""));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("   "));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("12"));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("ms"));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("12 fortnight"));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("abc ms"));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("PT-nope"));
+        Assertions.assertThrows(IllegalArgumentException.class, () -> TimeValue.parse("1.5 ms"));
+    }
+
+    @Test
+    void testToStringUnchanged() {
+        Assertions.assertEquals("9223372036854775807 SECONDS", TimeValue.ofSeconds(Long.MAX_VALUE).toString());
+        Assertions.assertEquals("0 MILLISECONDS", TimeValue.ZERO_MILLISECONDS.toString());
+        Assertions.assertEquals("1 MINUTE", TimeValue.ofMinutes(1).toString());
+        Assertions.assertEquals("2 HOURS", TimeValue.ofHours(2).toString());
+    }
+
+    @Test
+    void testParseLegacyFormat() throws ParseException {
+        Assertions.assertEquals(TimeValue.ofMinutes(1), TimeValue.parse("1 MINUTE"));
+        Assertions.assertEquals(TimeValue.ofSeconds(1), TimeValue.parse("1 SECOND"));
+        Assertions.assertEquals(TimeValue.ofMilliseconds(1), TimeValue.parse("1 MILLISECOND"));
+        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2 HOURS"));
+    }
+
+    @Test
+    void testIso8601ToDurationEquivalence() throws ParseException {
+        Assertions.assertEquals(Duration.parse("PT0.25S"), TimeValue.parse("PT0.25S").toDuration());
+        Assertions.assertEquals(Duration.parse("PT2H"), TimeValue.parse("PT2H").toDuration());
+        Assertions.assertEquals(Duration.parse("PT15M"), TimeValue.parse("PT15M").toDuration());
+        Assertions.assertEquals(Duration.parse("P1D"), TimeValue.parse("P1D").toDuration());
+        Assertions.assertEquals(Duration.parse("PT1H30M"), TimeValue.parse("PT1H30M").toDuration());
+    }
+
+    @Test
     void testToDuration() throws ParseException {
         Assertions.assertEquals(Long.MAX_VALUE, TimeValue.parse("9223372036854775807 SECONDS").toDuration().getSeconds());
     }

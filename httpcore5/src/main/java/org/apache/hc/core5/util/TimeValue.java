@@ -237,32 +237,118 @@ public class TimeValue implements Comparable<TimeValue> {
     }
 
     /**
-     * Parses a TimeValue in the format {@code <Long><SPACE><TimeUnit>}, for example {@code "1200 MILLISECONDS"}.
+     * Parses a TimeValue in various formats:
      * <p>
      * Parses:
      * </p>
      * <ul>
-     * <li>{@code "1200 MILLISECONDS"}.</li>
-     * <li>{@code " 1200 MILLISECONDS "}, spaces are ignored.</li>
-     * <li>{@code "1 MINUTE"}, singular units.</li>
-     * <li></li>
+     * <li>Classic format: {@code "1200 MILLISECONDS"}, {@code "1 MINUTE"}, spaces are ignored, case-insensitive.</li>
+     * <li>Short unit format: {@code "1200 ms"}, {@code "1 m"}, {@code "2h"}, case-insensitive, with or without space.</li>
+     * <li>ISO-8601 Duration format: {@code "PT0.25S"}, {@code "PT2H"}, {@code "PT1H30M"}, {@code "P1D"}.</li>
      * </ul>
-     *
      *
      * @param value the TimeValue to parse
      * @return a new TimeValue
-     * @throws ParseException if the number cannot be parsed
+     * @throws ParseException if the value cannot be parsed
      */
     public static TimeValue parse(final String value) throws ParseException {
-        final String split[] = value.trim().split("\\s+");
-        if (split.length < 2) {
+        Args.notNull(value, "value");
+        final String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
             throw new IllegalArgumentException(
-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
+                String.format("Expected format for TimeValue: %s, supported formats: <Long><SPACE><TimeUnit>, <Long><ShortUnit>, ISO-8601 duration", value));
         }
-        final String clean0 = split[0].trim();
-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+
+        // First try ISO-8601 format
+        if (trimmed.startsWith("P") || trimmed.startsWith("p")) {
+            return parseIso8601Duration(trimmed, value);
+        }
+
+        // Try classic or short unit format
+        return parseNumericFormat(trimmed, value);
+    }
+
+    private static TimeValue parseNumericFormat(final String trimmed, final String original) throws ParseException {
+        // First try compact format (no space, like "250ms")
+        final int firstNonDigitIndex = findFirstNonDigitIndex(trimmed);
+        if (firstNonDigitIndex > 0) {
+            final String numPart = trimmed.substring(0, firstNonDigitIndex);
+            final String unitPart = trimmed.substring(firstNonDigitIndex).trim();
+            if (!unitPart.isEmpty()) {
+                return parseWithUnit(numPart, unitPart, original);
+            }
+        }
+
+        // Try space-separated format
+        final String split[] = trimmed.split("\\s+");
+        if (split.length >= 2) {
+            return parseWithUnit(split[0].trim(), split[1].trim(), original);
+        }
+
+        throw new IllegalArgumentException(
+            String.format("Expected format for TimeValue: %s, supported formats: <Long><SPACE><TimeUnit>, <Long><ShortUnit>, ISO-8601 duration", original));
+    }
+
+    private static int findFirstNonDigitIndex(final String s) {
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (i == 0 && (c == '+' || c == '-')) {
+                continue;
+            }
+            if (!Character.isDigit(c)) {
+                return i;
+            }
+        }
+        return s.length();
+    }
+
+    private static TimeValue parseWithUnit(final String numStr, final String unitStr, final String original) throws ParseException {
+        try {
+            final long duration = Long.parseLong(numStr);
+            final TimeUnit timeUnit = parseTimeUnit(unitStr);
+            return TimeValue.of(duration, timeUnit);
+        } catch (final NumberFormatException e) {
+            throw new IllegalArgumentException(
+                String.format("Invalid number in TimeValue: %s, supported formats: <Long><SPACE><TimeUnit>, <Long><ShortUnit>, ISO-8601 duration", original), e);
+        } catch (final IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                String.format("Invalid unit in TimeValue: %s, supported units: ns, us, ms, s, m, h, d, NANOSECONDS, MICROSECONDS, MILLISECONDS, SECONDS, MINUTES, HOURS, DAYS", original), e);
+        }
+    }
+
+    private static TimeUnit parseTimeUnit(final String unitStr) {
+        final String normalized = unitStr.toUpperCase(Locale.ROOT);
+        // First try short units
+        switch (normalized) {
+            case "NS":
+                return TimeUnit.NANOSECONDS;
+            case "US":
+                return TimeUnit.MICROSECONDS;
+            case "MS":
+                return TimeUnit.MILLISECONDS;
+            case "S":
+                return TimeUnit.SECONDS;
+            case "M":
+                return TimeUnit.MINUTES;
+            case "H":
+                return TimeUnit.HOURS;
+            case "D":
+                return TimeUnit.DAYS;
+            default:
+                // Try full TimeUnit name (singular or plural)
+                final String plural = normalized.endsWith("S") ? normalized : normalized + "S";
+                return TimeUnit.valueOf(plural);
+        }
+    }
+
+    private static TimeValue parseIso8601Duration(final String trimmed, final String original) throws ParseException {
+        try {
+            final Duration duration = Duration.parse(trimmed);
+            return TimeValue.of(duration);
+        } catch (final Exception e) {
+            throw new IllegalArgumentException(
+                String.format("Invalid ISO-8601 duration in TimeValue: %s, supported formats: <Long><SPACE><TimeUnit>, <Long><ShortUnit>, ISO-8601 duration", original), e);
+        }
     }
 
     private final long duration;
