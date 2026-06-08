@@ -1175,7 +1175,14 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             }
             promisedStream.consumePromise(headers);
         } else {
-            continuation.copyPayload(payload);
+            // 直接复制 payload，但不要增加 count，因为这是初始的 PUSH_PROMISE 帧，不是 CONTINUATION
+            if (payload != null) {
+                final int originalLength = continuation.headerBuffer.length();
+                final int toCopy = payload.remaining();
+                continuation.headerBuffer.ensureCapacity(toCopy);
+                payload.get(continuation.headerBuffer.array(), originalLength, toCopy);
+                continuation.headerBuffer.setLength(originalLength + toCopy);
+            }
         }
     }
 
@@ -1226,7 +1233,14 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             recordPriorityFromHeaders(stream, headers);
             stream.consumeHeader(headers, frame.isFlagSet(FrameFlag.END_STREAM));
         } else {
-            continuation.copyPayload(payload);
+            // 直接复制 payload，但不要增加 count，因为这是初始的 HEADERS 帧，不是 CONTINUATION
+            if (payload != null) {
+                final int originalLength = continuation.headerBuffer.length();
+                final int toCopy = payload.remaining();
+                continuation.headerBuffer.ensureCapacity(toCopy);
+                payload.get(continuation.headerBuffer.array(), originalLength, toCopy);
+                continuation.headerBuffer.setLength(originalLength + toCopy);
+            }
         }
     }
 
@@ -1456,7 +1470,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         final boolean endStream;
         final ByteArrayBuffer headerBuffer;
         final int maxContinuation;
-        final boolean enforceMacContinuations;
+        final boolean enforceMaxContinuations;
 
         private int count;
 
@@ -1465,7 +1479,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             this.type = type;
             this.endStream = endStream;
             this.maxContinuation = maxContinuation;
-            this.enforceMacContinuations = maxContinuation < Integer.MAX_VALUE;
+            this.enforceMaxContinuations = maxContinuation > 0 && maxContinuation < Integer.MAX_VALUE;
             this.headerBuffer = new ByteArrayBuffer(1024);
         }
 
@@ -1473,10 +1487,10 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             if (payload == null) {
                 return;
             }
-            if (enforceMacContinuations && count > maxContinuation) {
+            count++;
+            if (enforceMaxContinuations && count > maxContinuation) {
                 throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
             }
-            count++;
             final int originalLength = headerBuffer.length();
             final int toCopy = payload.remaining();
             headerBuffer.ensureCapacity(toCopy);

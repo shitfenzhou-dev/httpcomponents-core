@@ -32,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 class H2ConfigTest {
@@ -72,6 +73,7 @@ class H2ConfigTest {
                 .setMaxFrameSize(16384)
                 .setPushEnabled(true)
                 .setCompressionEnabled(true)
+                .setMaxContinuations(7)
                 .build();
 
         final H2Config.Builder builder = H2Config.copy(h2Config);
@@ -82,9 +84,35 @@ class H2ConfigTest {
                 () -> assertEquals(h2Config.getInitialWindowSize(), h2Config2.getInitialWindowSize()),
                 () -> assertEquals(h2Config.getMaxConcurrentStreams(), h2Config2.getMaxConcurrentStreams()),
                 () -> assertEquals(h2Config.getMaxFrameSize(), h2Config2.getMaxFrameSize()),
-                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize())
+                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize()),
+                () -> assertEquals(h2Config.getMaxContinuations(), h2Config2.getMaxContinuations())
         );
 
+        // 测试 copy 0 值
+        final H2Config h2ConfigZero = H2Config.custom()
+                .setMaxContinuations(0)
+                .build();
+        final H2Config h2ConfigZeroCopy = H2Config.copy(h2ConfigZero).build();
+        assertEquals(0, h2ConfigZeroCopy.getMaxContinuations());
+    }
+
+    @Test
+    void setMaxContinuationsNegative() {
+        // 测试 setMaxContinuations(-1) 应该抛出异常
+        final H2Config.Builder builder = H2Config.custom();
+        Assertions.assertThrows(IllegalArgumentException.class, () -> {
+            builder.setMaxContinuations(-1);
+        });
+    }
+
+    @Test
+    void toStringIncludesMaxContinuations() {
+        // 测试 toString() 包含 maxContinuations
+        final H2Config h2Config = H2Config.custom()
+                .setMaxContinuations(42)
+                .build();
+        final String str = h2Config.toString();
+        Assertions.assertTrue(str.contains("maxContinuations=42"));
     }
 
 }
