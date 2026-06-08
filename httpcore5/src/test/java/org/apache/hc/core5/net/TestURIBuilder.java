@@ -673,6 +673,27 @@ class TestURIBuilder {
     }
 
     @Test
+    void testAppendToExistingRootlessPath() throws Exception {
+        final URI uri = new URIBuilder()
+                .setPath("api")
+                .appendPath("v1/resources")
+                .appendPath("idA")
+                .build();
+        Assertions.assertEquals(URI.create("api/v1/resources/idA"), uri);
+    }
+
+    @Test
+    void testAppendToExistingPathWithAuthorityPreservesLeadingSlash() throws Exception {
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("somehost")
+                .setPath("api")
+                .appendPath("v1")
+                .build();
+        Assertions.assertEquals(URI.create("http://somehost/api/v1"), uri);
+    }
+
+    @Test
     void testAppendToNonExistingPath() throws Exception {
         final URI uri = new URIBuilder()
                 .setScheme("https")
@@ -705,6 +726,25 @@ class TestURIBuilder {
     }
 
     @Test
+    void testAppendEmptyAndSlashPathsPreserveEmptySegments() throws Exception {
+        final URI appendEmpty = new URIBuilder()
+                .setPath("api")
+                .appendPath("")
+                .build();
+        final URI appendSlash = new URIBuilder()
+                .setPath("api")
+                .appendPath("/")
+                .build();
+        final URI appendDoubleSlash = new URIBuilder()
+                .setPath("api")
+                .appendPath("//")
+                .build();
+        Assertions.assertEquals(URI.create("api"), appendEmpty);
+        Assertions.assertEquals(URI.create("api/"), appendSlash);
+        Assertions.assertEquals(URI.create("api//"), appendDoubleSlash);
+    }
+
+    @Test
     void testAppendSegmentsVarargsToExistingPath() throws Exception {
         final URI uri = new URIBuilder()
                 .setScheme("https")
@@ -725,6 +765,26 @@ class TestURIBuilder {
                 .appendPathSegments("idA")
                 .build();
         Assertions.assertEquals(URI.create("https://somehost/api/v2/customers/idA"), uri);
+    }
+
+    @Test
+    void testAppendPathSegmentsToRootlessPath() throws Exception {
+        final URI uri = new URIBuilder()
+                .setScheme("file")
+                .setPathSegmentsRootless("dir", "foo")
+                .appendPathSegments("bar")
+                .build();
+        Assertions.assertEquals(URI.create("file:dir/foo/bar"), uri);
+    }
+
+    @Test
+    void testAppendPathSegmentsEncodeReservedCharactersWithinSegment() throws Exception {
+        final URI uri = new URIBuilder()
+                .setScheme("https")
+                .setHost("somehost")
+                .appendPathSegments("a/b", "c d")
+                .build();
+        Assertions.assertEquals(URI.create("https://somehost/a%2Fb/c%20d"), uri);
     }
 
     @Test
@@ -757,6 +817,18 @@ class TestURIBuilder {
                 .appendPathSegments(Arrays.asList("api", "v3", "customers"))
                 .build();
         Assertions.assertEquals(URI.create("http://myhost/api/v3/customers"), uri);
+    }
+
+    @Test
+    void testAppendNullSegmentsListToExistingPath() throws Exception {
+        final List<String> pathSegments = null;
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("myhost")
+                .setPath("api")
+                .appendPathSegments(pathSegments)
+                .build();
+        Assertions.assertEquals(URI.create("http://myhost/api"), uri);
     }
 
     @Test
