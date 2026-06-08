@@ -67,16 +67,16 @@ class TestReactiveDataConsumer {
                 }
             });
 
-        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
-        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
-        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
+        consumer.consume(buffer('1'));
+        consumer.consume(buffer('2'));
+        consumer.consume(buffer('3'));
         consumer.streamEnd(null);
 
         Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS), "Stream did not finish before timeout");
         Assertions.assertEquals(3, output.size());
-        Assertions.assertEquals(ByteBuffer.wrap(new byte[]{ '1' }), output.get(0));
-        Assertions.assertEquals(ByteBuffer.wrap(new byte[]{ '2' }), output.get(1));
-        Assertions.assertEquals(ByteBuffer.wrap(new byte[]{ '3' }), output.get(2));
+        Assertions.assertEquals(buffer('1'), output.get(0));
+        Assertions.assertEquals(buffer('2'), output.get(1));
+        Assertions.assertEquals(buffer('3'), output.get(2));
     }
 
     @Test
@@ -166,9 +166,133 @@ class TestReactiveDataConsumer {
     }
 
     @Test
+    void testUnboundedDemandDeliversBufferedDataAndCompletes() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        consumer.consume(buffer('1'));
+        consumer.consume(buffer('2'));
+        consumer.consume(buffer('3'));
+
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(Long.MAX_VALUE);
+        consumer.streamEnd(null);
+
+        Assertions.assertEquals(3, subscriber.items.size());
+        Assertions.assertEquals(buffer('1'), subscriber.items.get(0));
+        Assertions.assertEquals(buffer('2'), subscriber.items.get(1));
+        Assertions.assertEquals(buffer('3'), subscriber.items.get(2));
+        Assertions.assertNull(subscriber.error.get());
+        Assertions.assertEquals(1, subscriber.completed.get());
+    }
+
+    @Test
+    void testUnboundedDemandThenAdditionalRequestDoesNotOverflow() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(Long.MAX_VALUE);
+        subscriber.request(1);
+
+        consumer.consume(buffer('1'));
+        consumer.consume(buffer('2'));
+        consumer.streamEnd(null);
+
+        Assertions.assertEquals(2, subscriber.items.size());
+        Assertions.assertEquals(buffer('1'), subscriber.items.get(0));
+        Assertions.assertEquals(buffer('2'), subscriber.items.get(1));
+        Assertions.assertNull(subscriber.error.get());
+        Assertions.assertEquals(1, subscriber.completed.get());
+    }
+
+    @Test
+    void testRepeatedUnboundedRequestsDoNotOverflow() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(Long.MAX_VALUE);
+        subscriber.request(Long.MAX_VALUE);
+
+        consumer.consume(buffer('1'));
+        consumer.consume(buffer('2'));
+        consumer.streamEnd(null);
+
+        Assertions.assertEquals(2, subscriber.items.size());
+        Assertions.assertEquals(buffer('1'), subscriber.items.get(0));
+        Assertions.assertEquals(buffer('2'), subscriber.items.get(1));
+        Assertions.assertNull(subscriber.error.get());
+        Assertions.assertEquals(1, subscriber.completed.get());
+    }
+
+    @Test
+    void testFiniteDemandStillRequiresAdditionalRequests() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        consumer.consume(buffer('1'));
+        consumer.consume(buffer('2'));
+        consumer.consume(buffer('3'));
+
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(2);
+        Assertions.assertEquals(2, subscriber.items.size());
+        Assertions.assertEquals(buffer('1'), subscriber.items.get(0));
+        Assertions.assertEquals(buffer('2'), subscriber.items.get(1));
+
+        subscriber.request(1);
+        Assertions.assertEquals(3, subscriber.items.size());
+        Assertions.assertEquals(buffer('3'), subscriber.items.get(2));
+    }
+
+    @Test
+    void testRequestZeroTriggersError() {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(0);
+
+        Assertions.assertTrue(subscriber.error.get() instanceof IllegalArgumentException);
+        Assertions.assertEquals(0, subscriber.completed.get());
+        Assertions.assertTrue(subscriber.items.isEmpty());
+    }
+
+    @Test
+    void testRequestNegativeTriggersError() {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(-1);
+
+        Assertions.assertTrue(subscriber.error.get() instanceof IllegalArgumentException);
+        Assertions.assertEquals(0, subscriber.completed.get());
+        Assertions.assertTrue(subscriber.items.isEmpty());
+    }
+
+    @Test
+    void testCapacityIncrementsWithUnboundedDemand() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final List<Integer> increments = new ArrayList<>();
+        consumer.updateCapacity(increments::add);
+
+        final RecordingSubscriber subscriber = new RecordingSubscriber();
+        consumer.subscribe(subscriber);
+
+        subscriber.request(Long.MAX_VALUE);
+        consumer.consume(ByteBuffer.wrap(new byte[3]));
+        consumer.consume(ByteBuffer.wrap(new byte[5]));
+
+        Assertions.assertEquals(2, subscriber.items.size());
+        Assertions.assertEquals(2, increments.size());
+        Assertions.assertEquals(Integer.valueOf(3), increments.get(0));
+        Assertions.assertEquals(Integer.valueOf(5), increments.get(1));
+    }
+
+    @Test
     void testFullResponseBuffering() throws Exception {
-        // Due to inherent race conditions, is possible for the entire response to be buffered and completed before
-        // the Subscriber shows up. This must be handled correctly.
         final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
         final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
 
@@ -200,9 +324,6 @@ class TestReactiveDataConsumer {
 
     @Test
     void testFailAfterCompletion() {
-        // Calling consumer.failed() after consumer.streamEnd() must be a no-op.
-        // The exception must be discarded, and the subscriber must see that
-        // the stream was successfully completed.
         final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
 
         consumer.streamEnd(null);
@@ -216,5 +337,42 @@ class TestReactiveDataConsumer {
                 .blockingGet();
         Assertions.assertFalse(result.isOnError());
         Assertions.assertTrue(result.isOnComplete());
+    }
+
+    private static ByteBuffer buffer(final int b) {
+        return ByteBuffer.wrap(new byte[]{(byte) b});
+    }
+
+    private static final class RecordingSubscriber implements Subscriber<ByteBuffer> {
+
+        private final List<ByteBuffer> items = new ArrayList<>();
+        private final AtomicReference<Throwable> error = new AtomicReference<>();
+        private final AtomicInteger completed = new AtomicInteger();
+        private volatile Subscription subscription;
+
+        @Override
+        public void onSubscribe(final Subscription subscription) {
+            this.subscription = subscription;
+        }
+
+        @Override
+        public void onNext(final ByteBuffer byteBuffer) {
+            items.add(byteBuffer);
+        }
+
+        @Override
+        public void onError(final Throwable throwable) {
+            error.set(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            completed.incrementAndGet();
+        }
+
+        void request(final long increment) {
+            Assertions.assertNotNull(subscription);
+            subscription.request(increment);
+        }
     }
 }

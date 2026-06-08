@@ -137,10 +137,13 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     return;
                 }
                 ByteBuffer next;
-                while (requests.get() > 0 && (next = buffers.poll()) != null) {
+                long demand;
+                while ((demand = requests.get()) > 0 && (next = buffers.poll()) != null) {
                     final int bytesFreed = next.remaining();
                     s.onNext(next);
-                    requests.decrementAndGet();
+                    if (demand != Long.MAX_VALUE) {
+                        requests.decrementAndGet();
+                    }
                     windowScalingIncrement.addAndGet(bytesFreed);
                 }
                 final CapacityChannel localChannel = capacityChannel;
@@ -165,6 +168,25 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
         }
     }
 
+    private void addRequests(final long increment) {
+        long current;
+        long updated;
+        do {
+            current = requests.get();
+            if (current == Long.MAX_VALUE) {
+                return;
+            }
+            updated = saturatingAdd(current, increment);
+        } while (!requests.compareAndSet(current, updated));
+    }
+
+    private long saturatingAdd(final long current, final long increment) {
+        if (current >= Long.MAX_VALUE - increment) {
+            return Long.MAX_VALUE;
+        }
+        return current + increment;
+    }
+
     @Override
     public void subscribe(final Subscriber<? super ByteBuffer> subscriber) {
         this.subscriber = Args.notNull(subscriber, "subscriber");
@@ -175,7 +197,7 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     failed(new IllegalArgumentException("The number of elements requested must be strictly positive"));
                     return;
                 }
-                requests.addAndGet(increment);
+                addRequests(increment);
                 flushToSubscriber();
             }
 
