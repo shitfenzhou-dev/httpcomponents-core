@@ -27,12 +27,16 @@
 
 package org.apache.hc.core5.util;
 
+import java.math.BigInteger;
 import java.text.ParseException;
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
@@ -46,6 +50,22 @@ import org.apache.hc.core5.annotation.ThreadingBehavior;
 public class TimeValue implements Comparable<TimeValue> {
 
     static final int INT_UNDEFINED = -1;
+
+    private static final Pattern SIMPLE_TIME_VALUE_PATTERN = Pattern.compile("^([+-]?\\d+)\\s+([A-Za-z]+)$");
+    private static final Pattern COMPACT_TIME_VALUE_PATTERN = Pattern.compile("^([+-]?\\d+)([A-Za-z]+)$");
+    private static final BigInteger NANOS_PER_SECOND = BigInteger.valueOf(1000000000L);
+    private static final BigInteger NANOS_PER_MINUTE = BigInteger.valueOf(60L).multiply(NANOS_PER_SECOND);
+    private static final BigInteger NANOS_PER_HOUR = BigInteger.valueOf(60L).multiply(NANOS_PER_MINUTE);
+    private static final BigInteger NANOS_PER_DAY = BigInteger.valueOf(24L).multiply(NANOS_PER_HOUR);
+    private static final TimeUnit[] PARSE_EXACT_TIME_UNITS = {
+            TimeUnit.DAYS,
+            TimeUnit.HOURS,
+            TimeUnit.MINUTES,
+            TimeUnit.SECONDS,
+            TimeUnit.MILLISECONDS,
+            TimeUnit.MICROSECONDS,
+            TimeUnit.NANOSECONDS
+    };
 
     /**
      * A constant holding the maximum value a {@code TimeValue} can have: {@code Long.MAX_VALUE} days.
@@ -245,24 +265,162 @@ public class TimeValue implements Comparable<TimeValue> {
      * <li>{@code "1200 MILLISECONDS"}.</li>
      * <li>{@code " 1200 MILLISECONDS "}, spaces are ignored.</li>
      * <li>{@code "1 MINUTE"}, singular units.</li>
-     * <li></li>
+     * <li>{@code "250ms"}, short units without a space.</li>
+     * <li>{@code "PT15M"}, ISO-8601 durations.</li>
      * </ul>
-     *
      *
      * @param value the TimeValue to parse
      * @return a new TimeValue
-     * @throws ParseException if the number cannot be parsed
+     * @throws ParseException if the value cannot be parsed
      */
     public static TimeValue parse(final String value) throws ParseException {
-        final String split[] = value.trim().split("\\s+");
-        if (split.length < 2) {
-            throw new IllegalArgumentException(
-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
+        final String trimmed = Objects.requireNonNull(value, "value").trim();
+        if (trimmed.isEmpty()) {
+            throw parseException(value, "missing duration value and time unit", null);
         }
-        final String clean0 = split[0].trim();
-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+        if (looksLikeIsoDuration(trimmed)) {
+            return parseIsoDuration(value, trimmed);
+        }
+        return parseSimpleDuration(value, trimmed);
+    }
+
+    private static boolean fitsInLong(final BigInteger value) {
+        return value.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) >= 0
+                && value.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) <= 0;
+    }
+
+    private static boolean looksLikeIsoDuration(final String value) {
+        final String normalized = value.toUpperCase(Locale.ROOT);
+        return normalized.startsWith("P") || normalized.startsWith("+P") || normalized.startsWith("-P");
+    }
+
+    private static long parseDurationLong(final String value, final String duration) throws ParseException {
+        try {
+            return Long.parseLong(duration);
+        } catch (final NumberFormatException ex) {
+            throw parseException(value, "duration must be a signed 64-bit integer", ex);
+        }
+    }
+
+    private static TimeValue parseCompactDuration(final String value, final String token) throws ParseException {
+        final Matcher matcher = COMPACT_TIME_VALUE_PATTERN.matcher(token);
+        if (matcher.matches()) {
+            final TimeUnit timeUnit = parseShortTimeUnit(matcher.group(2));
+            if (timeUnit != null) {
+                return TimeValue.of(parseDurationLong(value, matcher.group(1)), timeUnit);
+            }
+            throw parseException(value, "compact format only supports short units ns, us, ms, s, m, h, d", null);
+        }
+        if (token.matches("[+-]?\\d+")) {
+            throw parseException(value, "missing time unit", null);
+        }
+        if (token.matches("[A-Za-z]+")) {
+            throw parseException(value, "missing duration value", null);
+        }
+        throw parseException(value, "unsupported compact duration format", null);
+    }
+
+    private static TimeValue parseIsoDuration(final String value, final String trimmed) throws ParseException {
+        try {
+            return toTimeValue(Duration.parse(trimmed.toUpperCase(Locale.ROOT)), value);
+        } catch (final DateTimeParseException ex) {
+            throw parseException(value, "invalid ISO-8601 duration", ex);
+        } catch (final ArithmeticException ex) {
+            throw parseException(value, "ISO-8601 duration is out of range", ex);
+        }
+    }
+
+    private static TimeValue parseSimpleDuration(final String value, final String trimmed) throws ParseException {
+        final Matcher matcher = SIMPLE_TIME_VALUE_PATTERN.matcher(trimmed);
+        if (matcher.matches()) {
+            return TimeValue.of(parseDurationLong(value, matcher.group(1)), parseTimeUnit(value, matcher.group(2)));
+        }
+        if (trimmed.indexOf(' ') < 0 && trimmed.indexOf('\t') < 0) {
+            return parseCompactDuration(value, trimmed);
+        }
+        throw parseException(value, "expected '<long> <unit>' or a supported compact short unit", null);
+    }
+
+    private static ParseException parseException(final String value, final String detail, final Exception cause) {
+        final ParseException parseException = new ParseException(String.format(
+                "Invalid time value '%s': %s. Supported formats: '<long> <TimeUnit>' such as '1 SECOND' or '1 MILLISECOND', short units ns/us/ms/s/m/h/d with or without whitespace such as '250 ms' or '250ms', and ISO-8601 durations such as 'PT15M'.",
+                value, detail), 0);
+        if (cause != null) {
+            parseException.initCause(cause);
+        }
+        return parseException;
+    }
+
+    private static TimeUnit parseShortTimeUnit(final String token) {
+        switch (token.toUpperCase(Locale.ROOT)) {
+        case "NS":
+            return TimeUnit.NANOSECONDS;
+        case "US":
+            return TimeUnit.MICROSECONDS;
+        case "MS":
+            return TimeUnit.MILLISECONDS;
+        case "S":
+            return TimeUnit.SECONDS;
+        case "M":
+            return TimeUnit.MINUTES;
+        case "H":
+            return TimeUnit.HOURS;
+        case "D":
+            return TimeUnit.DAYS;
+        default:
+            return null;
+        }
+    }
+
+    private static TimeUnit parseTimeUnit(final String value, final String token) throws ParseException {
+        final TimeUnit shortTimeUnit = parseShortTimeUnit(token);
+        if (shortTimeUnit != null) {
+            return shortTimeUnit;
+        }
+        final String normalized = token.trim().toUpperCase(Locale.ROOT);
+        final String timeUnitStr = normalized.endsWith("S") ? normalized : normalized + "S";
+        try {
+            return TimeUnit.valueOf(timeUnitStr);
+        } catch (final IllegalArgumentException ex) {
+            throw parseException(value, "unknown time unit '" + token + "'", ex);
+        }
+    }
+
+    private static BigInteger toBigIntegerNanos(final TimeUnit timeUnit) {
+        switch (timeUnit) {
+        case NANOSECONDS:
+            return BigInteger.ONE;
+        case MICROSECONDS:
+            return BigInteger.valueOf(1000L);
+        case MILLISECONDS:
+            return BigInteger.valueOf(1000000L);
+        case SECONDS:
+            return NANOS_PER_SECOND;
+        case MINUTES:
+            return NANOS_PER_MINUTE;
+        case HOURS:
+            return NANOS_PER_HOUR;
+        case DAYS:
+            return NANOS_PER_DAY;
+        default:
+            throw new IllegalStateException();
+        }
+    }
+
+    private static TimeValue toTimeValue(final Duration duration, final String value) throws ParseException {
+        if (Duration.ZERO.equals(duration)) {
+            return TimeValue.of(0, TimeUnit.NANOSECONDS);
+        }
+        final BigInteger totalNanos = BigInteger.valueOf(duration.getSeconds()).multiply(NANOS_PER_SECOND)
+                .add(BigInteger.valueOf(duration.getNano()));
+        for (final TimeUnit timeUnit : PARSE_EXACT_TIME_UNITS) {
+            final BigInteger nanosPerUnit = toBigIntegerNanos(timeUnit);
+            final BigInteger[] divRem = totalNanos.divideAndRemainder(nanosPerUnit);
+            if (divRem[1].signum() == 0 && fitsInLong(divRem[0])) {
+                return TimeValue.of(divRem[0].longValue(), timeUnit);
+            }
+        }
+        throw parseException(value, "ISO-8601 duration cannot be represented exactly as a TimeValue", null);
     }
 
     private final long duration;

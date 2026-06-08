@@ -145,6 +145,20 @@ class TestTimeValue {
         Assertions.assertEquals(duration, TimeValue.of(duration).toDuration());
     }
 
+    private void assertParsedAs(final String value, final long duration, final TimeUnit timeUnit) throws ParseException {
+        final TimeValue timeValue = TimeValue.parse(value);
+        Assertions.assertEquals(duration, timeValue.getDuration());
+        Assertions.assertEquals(timeUnit, timeValue.getTimeUnit());
+    }
+
+    private void assertParsedAsDuration(final String value, final Duration expectedDuration,
+            final long duration, final TimeUnit timeUnit) throws ParseException {
+        final TimeValue timeValue = TimeValue.parse(value);
+        Assertions.assertEquals(duration, timeValue.getDuration());
+        Assertions.assertEquals(timeUnit, timeValue.getTimeUnit());
+        Assertions.assertEquals(expectedDuration, timeValue.toDuration());
+    }
+
     @Test
     void testFactoryForHours() {
         testFactory(TimeUnit.HOURS);
@@ -269,24 +283,91 @@ class TestTimeValue {
     void testToString() {
         Assertions.assertEquals("9223372036854775807 SECONDS", TimeValue.ofSeconds(Long.MAX_VALUE).toString());
         Assertions.assertEquals("0 MILLISECONDS", TimeValue.ZERO_MILLISECONDS.toString());
+        Assertions.assertEquals("1 HOURS", TimeValue.ofHours(1).toString());
     }
 
     @Test
-    void testFromString() throws ParseException {
-        final TimeValue maxSeconds = TimeValue.ofSeconds(Long.MAX_VALUE);
-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 SECONDS"));
-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 SECONDS"));
-        Assertions.assertEquals(maxSeconds, TimeValue.parse(" 9223372036854775807 SECONDS "));
-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 Seconds"));
-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807  Seconds"));
-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807\tSeconds"));
-        Assertions.assertEquals(TimeValue.ZERO_MILLISECONDS, TimeValue.parse("0 MILLISECONDS"));
-        Assertions.assertEquals(TimeValue.ofMilliseconds(1), TimeValue.parse("1 MILLISECOND"));
-    }
-
-    @Test
-    void testToDuration() throws ParseException {
+    void testFromStringLegacyFormats() throws ParseException {
+        assertParsedAs("9223372036854775807 SECONDS", Long.MAX_VALUE, TimeUnit.SECONDS);
+        assertParsedAs(" 9223372036854775807 SECONDS ", Long.MAX_VALUE, TimeUnit.SECONDS);
+        assertParsedAs("9223372036854775807 Seconds", Long.MAX_VALUE, TimeUnit.SECONDS);
+        assertParsedAs("9223372036854775807  Seconds", Long.MAX_VALUE, TimeUnit.SECONDS);
+        assertParsedAs("9223372036854775807\tSeconds", Long.MAX_VALUE, TimeUnit.SECONDS);
+        assertParsedAs("0 MILLISECONDS", 0, TimeUnit.MILLISECONDS);
+        assertParsedAs("1 MILLISECOND", 1, TimeUnit.MILLISECONDS);
+        assertParsedAs("1 SECOND", 1, TimeUnit.SECONDS);
         Assertions.assertEquals(Long.MAX_VALUE, TimeValue.parse("9223372036854775807 SECONDS").toDuration().getSeconds());
+    }
+
+    @Test
+    void testFromStringShortUnits() throws ParseException {
+        assertParsedAs("1 ns", 1, TimeUnit.NANOSECONDS);
+        assertParsedAs("1ns", 1, TimeUnit.NANOSECONDS);
+        assertParsedAs("2 us", 2, TimeUnit.MICROSECONDS);
+        assertParsedAs("2us", 2, TimeUnit.MICROSECONDS);
+        assertParsedAs("250 ms", 250, TimeUnit.MILLISECONDS);
+        assertParsedAs("250ms", 250, TimeUnit.MILLISECONDS);
+        assertParsedAs("250MS", 250, TimeUnit.MILLISECONDS);
+        assertParsedAs("3 s", 3, TimeUnit.SECONDS);
+        assertParsedAs("3s", 3, TimeUnit.SECONDS);
+        assertParsedAs("1 m", 1, TimeUnit.MINUTES);
+        assertParsedAs("1 M", 1, TimeUnit.MINUTES);
+        assertParsedAs("1M", 1, TimeUnit.MINUTES);
+        assertParsedAs("2 h", 2, TimeUnit.HOURS);
+        assertParsedAs("2h", 2, TimeUnit.HOURS);
+        assertParsedAs("5 d", 5, TimeUnit.DAYS);
+        assertParsedAs("5D", 5, TimeUnit.DAYS);
+        assertParsedAs("+30s", 30, TimeUnit.SECONDS);
+        assertParsedAs("-1 ms", -1, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
+    void testFromStringRoundTripsToString() throws ParseException {
+        for (final TimeUnit timeUnit : TimeUnit.values()) {
+            final TimeValue expected = TimeValue.of(7, timeUnit);
+            final TimeValue actual = TimeValue.parse(expected.toString());
+            Assertions.assertEquals(expected.getDuration(), actual.getDuration());
+            Assertions.assertEquals(expected.getTimeUnit(), actual.getTimeUnit());
+        }
+    }
+
+    @Test
+    void testFromStringIsoDurations() throws ParseException {
+        assertParsedAsDuration("PT0.25S", Duration.parse("PT0.25S"), 250, TimeUnit.MILLISECONDS);
+        assertParsedAsDuration("PT0.000001S", Duration.parse("PT0.000001S"), 1, TimeUnit.MICROSECONDS);
+        assertParsedAsDuration("PT2H", Duration.parse("PT2H"), 2, TimeUnit.HOURS);
+        assertParsedAsDuration("PT15M", Duration.parse("PT15M"), 15, TimeUnit.MINUTES);
+        assertParsedAsDuration("P1D", Duration.parse("P1D"), 1, TimeUnit.DAYS);
+        assertParsedAsDuration("PT1H30M", Duration.parse("PT1H30M"), 90, TimeUnit.MINUTES);
+    }
+
+    @Test
+    void testFromStringLongBoundaries() throws ParseException {
+        assertParsedAs("9223372036854775807 ns", Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        assertParsedAs("-9223372036854775808 ms", Long.MIN_VALUE, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
+    void testFromStringInvalid() {
+        final String[] invalidValues = {
+                "",
+                "   ",
+                "12",
+                "ms",
+                "12 fortnight",
+                "abc ms",
+                "PT-nope",
+                "1.5 ms",
+                "PT9223372036854775808S"
+        };
+        for (final String invalidValue : invalidValues) {
+            final ParseException parseException = Assertions.assertThrows(ParseException.class,
+                    () -> TimeValue.parse(invalidValue));
+            Assertions.assertTrue(parseException.getMessage().contains("Supported formats"));
+        }
+        final ParseException parseException = Assertions.assertThrows(ParseException.class,
+                () -> TimeValue.parse("12 fortnight"));
+        Assertions.assertTrue(parseException.getMessage().contains("12 fortnight"));
     }
 
     @Test
