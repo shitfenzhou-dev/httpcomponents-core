@@ -673,6 +673,57 @@ class TestURIBuilder {
     }
 
     @Test
+    void testAppendToExistingPathRootless() throws Exception {
+        final URI uri = new URIBuilder()
+                .setPath("api")
+                .appendPath("v1/resources")
+                .appendPath("idA")
+                .build();
+        Assertions.assertEquals(URI.create("api/v1/resources/idA"), uri);
+    }
+
+    @Test
+    void testSetPathAndAppendPathWithAuthority() throws Exception {
+        final URI uri = new URIBuilder()
+                .setScheme("http")
+                .setHost("host")
+                .setPath("api")
+                .appendPath("v1")
+                .build();
+        Assertions.assertEquals(URI.create("http://host/api/v1"), uri);
+    }
+
+    @Test
+    void testAppendPathEmptyAndSlash() throws Exception {
+        URIBuilder builder = new URIBuilder().setPath("api").appendPath("");
+        Assertions.assertEquals(URI.create("api"), builder.build());
+
+        builder = new URIBuilder().setPath("api").appendPath("/");
+        Assertions.assertEquals(URI.create("api/"), builder.build());
+
+        builder = new URIBuilder().setPath("api").appendPath("//");
+        Assertions.assertEquals(URI.create("api//"), builder.build());
+    }
+
+    @Test
+    void testAppendPathSegmentsEncoding() throws Exception {
+        final URI uri = new URIBuilder()
+                .setPath("api")
+                .appendPathSegments("a/b", "c d")
+                .build();
+        Assertions.assertEquals(URI.create("api/a%2Fb/c%20d"), uri);
+    }
+
+    @Test
+    void testSetPathSegmentsRootlessThenAppend() throws Exception {
+        final URI uri = new URIBuilder()
+                .setPathSegmentsRootless("dir", "foo")
+                .appendPathSegments("bar")
+                .build();
+        Assertions.assertEquals(URI.create("dir/foo/bar"), uri);
+    }
+
+    @Test
     void testAppendToNonExistingPath() throws Exception {
         final URI uri = new URIBuilder()
                 .setScheme("https")

@@ -1,0 +1,137 @@
+diff --git a/httpcore5/src/main/java/org/apache/hc/core5/net/URIBuilder.java b/httpcore5/src/main/java/org/apache/hc/core5/net/URIBuilder.java
+index febe0f5cb..bd7736c85 100644
+--- a/httpcore5/src/main/java/org/apache/hc/core5/net/URIBuilder.java
++++ b/httpcore5/src/main/java/org/apache/hc/core5/net/URIBuilder.java
+@@ -302,33 +302,21 @@ static List<NameValuePair> parseQuery(final CharSequence s, final Charset charse
+     }
+ 
+     static List<String> splitPath(final CharSequence s) {
+-        if (s == null) {
++        if (s == null || s.length() == 0) {
+             return Collections.emptyList();
+         }
+-        final ParserCursor cursor = new ParserCursor(0, s.length());
+-        // Skip leading separator
+-        if (cursor.atEnd()) {
+-            return new ArrayList<>(0);
+-        }
+-        if (s.charAt(cursor.getPos()) == PATH_SEPARATOR) {
+-            cursor.updatePos(cursor.getPos() + 1);
+-        }
+         final List<String> list = new ArrayList<>();
+-        final StringBuilder buf = new StringBuilder();
+-        for (;;) {
+-            if (cursor.atEnd()) {
+-                list.add(buf.toString());
+-                break;
+-            }
+-            final char current = s.charAt(cursor.getPos());
+-            if (current == PATH_SEPARATOR) {
+-                list.add(buf.toString());
+-                buf.setLength(0);
+-            } else {
+-                buf.append(current);
++        int start = 0;
++        if (s.charAt(0) == PATH_SEPARATOR) {
++            start = 1;
++        }
++        for (int i = start; i < s.length(); i++) {
++            if (s.charAt(i) == PATH_SEPARATOR) {
++                list.add(s.subSequence(start, i).toString());
++                start = i + 1;
+             }
+-            cursor.updatePos(cursor.getPos() + 1);
+         }
++        list.add(s.subSequence(start, s.length()).toString());
+         return list;
+     }
+ 
+@@ -671,7 +659,7 @@ public URIBuilder appendPath(final String path) {
+      * @return this instance.
+      */
+     public URIBuilder setPathSegments(final String... pathSegments) {
+-        return setPathSegments(Arrays.asList(pathSegments));
++        return setPathSegments(pathSegments != null ? Arrays.asList(pathSegments) : null);
+     }
+ 
+     /**
+@@ -680,7 +668,7 @@ public URIBuilder setPathSegments(final String... pathSegments) {
+      * @return this instance.
+      */
+     public URIBuilder appendPathSegments(final String... pathSegments) {
+-        return appendPathSegments(Arrays.asList(pathSegments));
++        return appendPathSegments(pathSegments != null ? Arrays.asList(pathSegments) : null);
+     }
+ 
+     /**
+@@ -692,7 +680,7 @@ public URIBuilder appendPathSegments(final String... pathSegments) {
+      * @since 5.1
+      */
+     public URIBuilder setPathSegmentsRootless(final String... pathSegments) {
+-        return setPathSegmentsRootless(Arrays.asList(pathSegments));
++        return setPathSegmentsRootless(pathSegments != null ? Arrays.asList(pathSegments) : null);
+     }
+ 
+     /**
+diff --git a/httpcore5/src/test/java/org/apache/hc/core5/net/TestURIBuilder.java b/httpcore5/src/test/java/org/apache/hc/core5/net/TestURIBuilder.java
+index 3483309a3..b98eb7722 100644
+--- a/httpcore5/src/test/java/org/apache/hc/core5/net/TestURIBuilder.java
++++ b/httpcore5/src/test/java/org/apache/hc/core5/net/TestURIBuilder.java
+@@ -672,6 +672,57 @@ void testAppendToExistingPath() throws Exception {
+         Assertions.assertEquals(URI.create("https://somehost/api/v1/resources/idA"), uri);
+     }
+ 
++    @Test
++    void testAppendToExistingPathRootless() throws Exception {
++        final URI uri = new URIBuilder()
++                .setPath("api")
++                .appendPath("v1/resources")
++                .appendPath("idA")
++                .build();
++        Assertions.assertEquals(URI.create("api/v1/resources/idA"), uri);
++    }
++
++    @Test
++    void testSetPathAndAppendPathWithAuthority() throws Exception {
++        final URI uri = new URIBuilder()
++                .setScheme("http")
++                .setHost("host")
++                .setPath("api")
++                .appendPath("v1")
++                .build();
++        Assertions.assertEquals(URI.create("http://host/api/v1"), uri);
++    }
++
++    @Test
++    void testAppendPathEmptyAndSlash() throws Exception {
++        URIBuilder builder = new URIBuilder().setPath("api").appendPath("");
++        Assertions.assertEquals(URI.create("api"), builder.build());
++
++        builder = new URIBuilder().setPath("api").appendPath("/");
++        Assertions.assertEquals(URI.create("api/"), builder.build());
++
++        builder = new URIBuilder().setPath("api").appendPath("//");
++        Assertions.assertEquals(URI.create("api//"), builder.build());
++    }
++
++    @Test
++    void testAppendPathSegmentsEncoding() throws Exception {
++        final URI uri = new URIBuilder()
++                .setPath("api")
++                .appendPathSegments("a/b", "c d")
++                .build();
++        Assertions.assertEquals(URI.create("api/a%2Fb/c%20d"), uri);
++    }
++
++    @Test
++    void testSetPathSegmentsRootlessThenAppend() throws Exception {
++        final URI uri = new URIBuilder()
++                .setPathSegmentsRootless("dir", "foo")
++                .appendPathSegments("bar")
++                .build();
++        Assertions.assertEquals(URI.create("dir/foo/bar"), uri);
++    }
++
+     @Test
+     void testAppendToNonExistingPath() throws Exception {
+         final URI uri = new URIBuilder()

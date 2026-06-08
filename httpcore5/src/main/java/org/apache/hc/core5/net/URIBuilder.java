@@ -302,33 +302,21 @@ public class URIBuilder {
     }
 
     static List<String> splitPath(final CharSequence s) {
-        if (s == null) {
+        if (s == null || s.length() == 0) {
             return Collections.emptyList();
         }
-        final ParserCursor cursor = new ParserCursor(0, s.length());
-        // Skip leading separator
-        if (cursor.atEnd()) {
-            return new ArrayList<>(0);
-        }
-        if (s.charAt(cursor.getPos()) == PATH_SEPARATOR) {
-            cursor.updatePos(cursor.getPos() + 1);
-        }
         final List<String> list = new ArrayList<>();
-        final StringBuilder buf = new StringBuilder();
-        for (;;) {
-            if (cursor.atEnd()) {
-                list.add(buf.toString());
-                break;
-            }
-            final char current = s.charAt(cursor.getPos());
-            if (current == PATH_SEPARATOR) {
-                list.add(buf.toString());
-                buf.setLength(0);
-            } else {
-                buf.append(current);
-            }
-            cursor.updatePos(cursor.getPos() + 1);
+        int start = 0;
+        if (s.charAt(0) == PATH_SEPARATOR) {
+            start = 1;
         }
+        for (int i = start; i < s.length(); i++) {
+            if (s.charAt(i) == PATH_SEPARATOR) {
+                list.add(s.subSequence(start, i).toString());
+                start = i + 1;
+            }
+        }
+        list.add(s.subSequence(start, s.length()).toString());
         return list;
     }
 
@@ -671,7 +659,7 @@ public class URIBuilder {
      * @return this instance.
      */
     public URIBuilder setPathSegments(final String... pathSegments) {
-        return setPathSegments(Arrays.asList(pathSegments));
+        return setPathSegments(pathSegments != null ? Arrays.asList(pathSegments) : null);
     }
 
     /**
@@ -680,7 +668,7 @@ public class URIBuilder {
      * @return this instance.
      */
     public URIBuilder appendPathSegments(final String... pathSegments) {
-        return appendPathSegments(Arrays.asList(pathSegments));
+        return appendPathSegments(pathSegments != null ? Arrays.asList(pathSegments) : null);
     }
 
     /**
@@ -692,7 +680,7 @@ public class URIBuilder {
      * @since 5.1
      */
     public URIBuilder setPathSegmentsRootless(final String... pathSegments) {
-        return setPathSegmentsRootless(Arrays.asList(pathSegments));
+        return setPathSegmentsRootless(pathSegments != null ? Arrays.asList(pathSegments) : null);
     }
 
     /**
