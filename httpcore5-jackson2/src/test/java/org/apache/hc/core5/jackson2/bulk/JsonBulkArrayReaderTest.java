@@ -42,6 +42,7 @@ import org.apache.hc.core5.http.message.BasicHeader;
 import org.apache.hc.core5.jackson2.http.RequestData;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class JsonBulkArrayReaderTest {
 

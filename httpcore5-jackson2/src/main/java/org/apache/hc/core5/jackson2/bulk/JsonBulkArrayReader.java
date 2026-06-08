@@ -24,6 +24,7 @@
  * <http://www.apache.org/>.
  *
  */
+
 package org.apache.hc.core5.jackson2.bulk;
 
 import java.io.IOException;
@@ -32,6 +33,7 @@ import java.nio.ByteBuffer;
 
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.util.TokenBuffer;
 
@@ -39,6 +41,7 @@ import org.apache.hc.core5.jackson2.JsonAsyncTokenizer;
 import org.apache.hc.core5.jackson2.JsonResultSink;
 import org.apache.hc.core5.jackson2.TokenBufferAssembler;
 import org.apache.hc.core5.jackson2.TopLevelArrayTokenFilter;
+import org.apache.hc.core5.util.Args;
 
 /**
  * Event-driven bulk JSON reader that can read arrays of objects while buffering only a single
@@ -56,7 +59,19 @@ public final class JsonBulkArrayReader {
         this.jsonTokenizer = new JsonAsyncTokenizer(objectMapper.getFactory());
     }
 
+    public <T> void initialize(final Class<T> clazz, final JsonResultSink<T> resultSink) throws IOException {
+        Args.notNull(clazz, "clazz");
+        initialize(objectMapper.constructType(clazz), resultSink);
+    }
+
     public <T> void initialize(final TypeReference<T> typeReference, final JsonResultSink<T> resultSink) throws IOException {
+        Args.notNull(typeReference, "typeReference");
+        initialize(objectMapper.constructType(typeReference), resultSink);
+    }
+
+    private <T> void initialize(final JavaType javaType, final JsonResultSink<T> resultSink) throws IOException {
+        Args.notNull(javaType, "javaType");
+        Args.notNull(resultSink, "resultSink");
         this.jsonTokenizer.initialize(new TopLevelArrayTokenFilter(new TokenBufferAssembler(new JsonResultSink<TokenBuffer>() {
 
             @Override
@@ -68,7 +83,7 @@ public final class JsonBulkArrayReader {
             public void accept(final TokenBuffer tokenBuffer) {
                 try {
                     final JsonParser jsonParser = tokenBuffer != null ? tokenBuffer.asParserOnFirstToken() : null;
-                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, typeReference) : null;
+                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, javaType) : null;
                     if (result != null) {
                         resultSink.accept(result);
                     }

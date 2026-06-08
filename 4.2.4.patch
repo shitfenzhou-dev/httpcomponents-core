@@ -1,0 +1,69 @@
+diff --git a/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java b/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
+index 4a9012fcb..a0adda8cf 100644
+--- a/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
++++ b/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
+@@ -24,6 +24,7 @@
+  * <http://www.apache.org/>.
+  *
+  */
++
+ package org.apache.hc.core5.jackson2.bulk;
+ 
+ import java.io.IOException;
+@@ -32,6 +33,7 @@
+ 
+ import com.fasterxml.jackson.core.JsonParser;
+ import com.fasterxml.jackson.core.type.TypeReference;
++import com.fasterxml.jackson.databind.JavaType;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import com.fasterxml.jackson.databind.util.TokenBuffer;
+ 
+@@ -39,6 +41,7 @@
+ import org.apache.hc.core5.jackson2.JsonResultSink;
+ import org.apache.hc.core5.jackson2.TokenBufferAssembler;
+ import org.apache.hc.core5.jackson2.TopLevelArrayTokenFilter;
++import org.apache.hc.core5.util.Args;
+ 
+ /**
+  * Event-driven bulk JSON reader that can read arrays of objects while buffering only a single
+@@ -56,7 +59,19 @@ public JsonBulkArrayReader(final ObjectMapper objectMapper) {
+         this.jsonTokenizer = new JsonAsyncTokenizer(objectMapper.getFactory());
+     }
+ 
++    public <T> void initialize(final Class<T> clazz, final JsonResultSink<T> resultSink) throws IOException {
++        Args.notNull(clazz, "clazz");
++        initialize(objectMapper.constructType(clazz), resultSink);
++    }
++
+     public <T> void initialize(final TypeReference<T> typeReference, final JsonResultSink<T> resultSink) throws IOException {
++        Args.notNull(typeReference, "typeReference");
++        initialize(objectMapper.constructType(typeReference), resultSink);
++    }
++
++    private <T> void initialize(final JavaType javaType, final JsonResultSink<T> resultSink) throws IOException {
++        Args.notNull(javaType, "javaType");
++        Args.notNull(resultSink, "resultSink");
+         this.jsonTokenizer.initialize(new TopLevelArrayTokenFilter(new TokenBufferAssembler(new JsonResultSink<TokenBuffer>() {
+ 
+             @Override
+@@ -68,7 +83,7 @@ public void begin(final int sizeHint) {
+             public void accept(final TokenBuffer tokenBuffer) {
+                 try {
+                     final JsonParser jsonParser = tokenBuffer != null ? tokenBuffer.asParserOnFirstToken() : null;
+-                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, typeReference) : null;
++                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, javaType) : null;
+                     if (result != null) {
+                         resultSink.accept(result);
+                     }
+diff --git a/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java b/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
+index 690ac18ad..5bc42cc60 100644
+--- a/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
++++ b/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
+@@ -42,6 +42,7 @@
+ import org.apache.hc.core5.jackson2.http.RequestData;
+ import org.assertj.core.api.Assertions;
+ import org.junit.jupiter.api.Test;
++import static org.junit.jupiter.api.Assertions.assertThrows;
+ 
+ public class JsonBulkArrayReaderTest {
+ 
