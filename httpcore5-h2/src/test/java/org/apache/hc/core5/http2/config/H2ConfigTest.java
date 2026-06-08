@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +55,7 @@ class H2ConfigTest {
                 .setMaxFrameSize(16384)
                 .setPushEnabled(true)
                 .setCompressionEnabled(true)
+                .setMaxContinuations(7)
                 .build();
 
         assertEquals(1, h2Config.getHeaderTableSize());
@@ -61,6 +63,7 @@ class H2ConfigTest {
         assertEquals(16384, h2Config.getMaxFrameSize());
         assertTrue(h2Config.isPushEnabled());
         assertTrue(h2Config.isCompressionEnabled());
+        assertEquals(7, h2Config.getMaxContinuations());
     }
 
     @Test
@@ -72,19 +75,44 @@ class H2ConfigTest {
                 .setMaxFrameSize(16384)
                 .setPushEnabled(true)
                 .setCompressionEnabled(true)
+                .setMaxContinuations(7)
+                .build();
+
+        final H2Config h2ConfigZero = H2Config.custom()
+                .setMaxContinuations(0)
                 .build();
 
         final H2Config.Builder builder = H2Config.copy(h2Config);
         final H2Config h2Config2 = builder.build();
+
+        final H2Config.Builder builderZero = H2Config.copy(h2ConfigZero);
+        final H2Config h2ConfigZero2 = builderZero.build();
 
         assertAll(
                 () -> assertEquals(h2Config.getHeaderTableSize(), h2Config2.getHeaderTableSize()),
                 () -> assertEquals(h2Config.getInitialWindowSize(), h2Config2.getInitialWindowSize()),
                 () -> assertEquals(h2Config.getMaxConcurrentStreams(), h2Config2.getMaxConcurrentStreams()),
                 () -> assertEquals(h2Config.getMaxFrameSize(), h2Config2.getMaxFrameSize()),
-                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize())
+                () -> assertEquals(h2Config.getMaxHeaderListSize(), h2Config2.getMaxHeaderListSize()),
+                () -> assertEquals(h2Config.getMaxContinuations(), h2Config2.getMaxContinuations()),
+                () -> assertEquals(0, h2ConfigZero2.getMaxContinuations())
         );
-
     }
 
+    @Test
+    void setMaxContinuationsNegativeThrowsException() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            H2Config.custom().setMaxContinuations(-1);
+        });
+    }
+
+    @Test
+    void testToString() {
+        final H2Config h2Config = H2Config.custom()
+                .setMaxContinuations(7)
+                .build();
+        
+        final String str = h2Config.toString();
+        assertTrue(str.contains("maxContinuations=7"));
+    }
 }
