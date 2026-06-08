@@ -1,0 +1,299 @@
+diff --git a/httpcore5-reactive/src/main/java/org/apache/hc/core5/reactive/ReactiveDataConsumer.java b/httpcore5-reactive/src/main/java/org/apache/hc/core5/reactive/ReactiveDataConsumer.java
+index 0e85b2450..f93ddc99a 100644
+--- a/httpcore5-reactive/src/main/java/org/apache/hc/core5/reactive/ReactiveDataConsumer.java
++++ b/httpcore5-reactive/src/main/java/org/apache/hc/core5/reactive/ReactiveDataConsumer.java
+@@ -137,10 +137,17 @@ private void flushToSubscriber() {
+                     return;
+                 }
+                 ByteBuffer next;
+-                while (requests.get() > 0 && (next = buffers.poll()) != null) {
++                while ((next = buffers.poll()) != null) {
++                    final long currentRequests = requests.get();
++                    if (currentRequests <= 0) {
++                        buffers.add(next);
++                        break;
++                    }
+                     final int bytesFreed = next.remaining();
+                     s.onNext(next);
+-                    requests.decrementAndGet();
++                    if (currentRequests != Long.MAX_VALUE) {
++                        requests.decrementAndGet();
++                    }
+                     windowScalingIncrement.addAndGet(bytesFreed);
+                 }
+                 final CapacityChannel localChannel = capacityChannel;
+@@ -165,6 +172,26 @@ private void flushToSubscriber() {
+         }
+     }
+ 
++    private long saturatingAdd(final long current, final long increment) {
++        final long result = current + increment;
++        if (current > 0 && increment > 0 && result < 0) {
++            return Long.MAX_VALUE;
++        }
++        return result;
++    }
++
++    private void safeRequest(final long increment) {
++        long current;
++        long newVal;
++        do {
++            current = requests.get();
++            if (current == Long.MAX_VALUE) {
++                return;
++            }
++            newVal = saturatingAdd(current, increment);
++        } while (!requests.compareAndSet(current, newVal));
++    }
++
+     @Override
+     public void subscribe(final Subscriber<? super ByteBuffer> subscriber) {
+         this.subscriber = Args.notNull(subscriber, "subscriber");
+@@ -175,7 +202,7 @@ public void request(final long increment) {
+                     failed(new IllegalArgumentException("The number of elements requested must be strictly positive"));
+                     return;
+                 }
+-                requests.addAndGet(increment);
++                safeRequest(increment);
+                 flushToSubscriber();
+             }
+ 
+diff --git a/httpcore5-reactive/src/test/java/org/apache/hc/core5/reactive/TestReactiveDataConsumer.java b/httpcore5-reactive/src/test/java/org/apache/hc/core5/reactive/TestReactiveDataConsumer.java
+index f7b5b4b38..452170501 100644
+--- a/httpcore5-reactive/src/test/java/org/apache/hc/core5/reactive/TestReactiveDataConsumer.java
++++ b/httpcore5-reactive/src/test/java/org/apache/hc/core5/reactive/TestReactiveDataConsumer.java
+@@ -217,4 +217,234 @@ void testFailAfterCompletion() {
+         Assertions.assertFalse(result.isOnError());
+         Assertions.assertTrue(result.isOnComplete());
+     }
++
++    @Test
++    void testRequestLongMaxValue() throws Exception {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
++        final CountDownLatch complete = new CountDownLatch(1);
++
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            private Subscription subscription;
++
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscription = s;
++                subscription.request(Long.MAX_VALUE);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++                output.add(byteBuffer);
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++            }
++
++            @Override
++            public void onComplete() {
++                complete.countDown();
++            }
++        });
++
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
++        consumer.streamEnd(null);
++
++        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
++        Assertions.assertEquals(3, output.size());
++    }
++
++    @Test
++    void testRequestLongMaxValueThenRequestOne() throws Exception {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
++        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
++        final CountDownLatch complete = new CountDownLatch(1);
++
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscriptionRef.set(s);
++                s.request(Long.MAX_VALUE);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++                output.add(byteBuffer);
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++            }
++
++            @Override
++            public void onComplete() {
++                complete.countDown();
++            }
++        });
++
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
++        subscriptionRef.get().request(1);
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
++        consumer.streamEnd(null);
++
++        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
++        Assertions.assertEquals(3, output.size());
++    }
++
++    @Test
++    void testMultipleLongMaxValueRequests() throws Exception {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
++        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
++        final CountDownLatch complete = new CountDownLatch(1);
++
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscriptionRef.set(s);
++                s.request(Long.MAX_VALUE);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++                output.add(byteBuffer);
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++            }
++
++            @Override
++            public void onComplete() {
++                complete.countDown();
++            }
++        });
++
++        subscriptionRef.get().request(Long.MAX_VALUE);
++        subscriptionRef.get().request(Long.MAX_VALUE);
++
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
++        consumer.streamEnd(null);
++
++        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
++        Assertions.assertEquals(3, output.size());
++    }
++
++    @Test
++    void testLimitedDemand() throws Exception {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
++        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
++        final CountDownLatch firstBatch = new CountDownLatch(2);
++
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscriptionRef.set(s);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++                output.add(byteBuffer);
++                firstBatch.countDown();
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++            }
++
++            @Override
++            public void onComplete() {
++            }
++        });
++
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
++        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
++
++        subscriptionRef.get().request(2);
++
++        Assertions.assertTrue(firstBatch.await(1, TimeUnit.SECONDS));
++        Assertions.assertEquals(2, output.size());
++    }
++
++    @Test
++    void testRequestZeroAndNegative() {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final AtomicReference<Throwable> errorRef = new AtomicReference<>();
++        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
++
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscriptionRef.set(s);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++                errorRef.set(throwable);
++            }
++
++            @Override
++            public void onComplete() {
++            }
++        });
++
++        subscriptionRef.get().request(0);
++        Assertions.assertTrue(errorRef.get() instanceof IllegalArgumentException);
++
++        errorRef.set(null);
++        subscriptionRef.get().request(-1);
++        Assertions.assertTrue(errorRef.get() instanceof IllegalArgumentException);
++    }
++
++    @Test
++    void testCapacityChannelInUnboundedMode() throws Exception {
++        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
++        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
++        final AtomicInteger lastIncrement = new AtomicInteger(-1);
++        final CapacityChannel channel = lastIncrement::set;
++        consumer.updateCapacity(channel);
++
++        final AtomicInteger received = new AtomicInteger(0);
++        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
++        consumer.subscribe(new Subscriber<ByteBuffer>() {
++            @Override
++            public void onSubscribe(final Subscription s) {
++                subscriptionRef.set(s);
++            }
++
++            @Override
++            public void onNext(final ByteBuffer byteBuffer) {
++                received.incrementAndGet();
++            }
++
++            @Override
++            public void onError(final Throwable throwable) {
++            }
++
++            @Override
++            public void onComplete() {
++            }
++        });
++
++        consumer.consume(data.duplicate());
++        consumer.consume(data.duplicate());
++        subscriptionRef.get().request(Long.MAX_VALUE);
++        Assertions.assertEquals(2 * 1024, lastIncrement.get());
++
++        consumer.consume(data.duplicate());
++        Assertions.assertEquals(1024, lastIncrement.get());
++    }
+ }

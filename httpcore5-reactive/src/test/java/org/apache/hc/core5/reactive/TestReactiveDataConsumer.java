@@ -217,4 +217,234 @@ class TestReactiveDataConsumer {
         Assertions.assertFalse(result.isOnError());
         Assertions.assertTrue(result.isOnComplete());
     }
+
+    @Test
+    void testRequestLongMaxValue() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
+        final CountDownLatch complete = new CountDownLatch(1);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            private Subscription subscription;
+
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscription = s;
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+                output.add(byteBuffer);
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+                complete.countDown();
+            }
+        });
+
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
+        consumer.streamEnd(null);
+
+        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
+        Assertions.assertEquals(3, output.size());
+    }
+
+    @Test
+    void testRequestLongMaxValueThenRequestOne() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
+        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+        final CountDownLatch complete = new CountDownLatch(1);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscriptionRef.set(s);
+                s.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+                output.add(byteBuffer);
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+                complete.countDown();
+            }
+        });
+
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
+        subscriptionRef.get().request(1);
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
+        consumer.streamEnd(null);
+
+        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
+        Assertions.assertEquals(3, output.size());
+    }
+
+    @Test
+    void testMultipleLongMaxValueRequests() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
+        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+        final CountDownLatch complete = new CountDownLatch(1);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscriptionRef.set(s);
+                s.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+                output.add(byteBuffer);
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+                complete.countDown();
+            }
+        });
+
+        subscriptionRef.get().request(Long.MAX_VALUE);
+        subscriptionRef.get().request(Long.MAX_VALUE);
+
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
+        consumer.streamEnd(null);
+
+        Assertions.assertTrue(complete.await(1, TimeUnit.SECONDS));
+        Assertions.assertEquals(3, output.size());
+    }
+
+    @Test
+    void testLimitedDemand() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final List<ByteBuffer> output = Collections.synchronizedList(new ArrayList<>());
+        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+        final CountDownLatch firstBatch = new CountDownLatch(2);
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscriptionRef.set(s);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+                output.add(byteBuffer);
+                firstBatch.countDown();
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '1' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '2' }));
+        consumer.consume(ByteBuffer.wrap(new byte[]{ '3' }));
+
+        subscriptionRef.get().request(2);
+
+        Assertions.assertTrue(firstBatch.await(1, TimeUnit.SECONDS));
+        Assertions.assertEquals(2, output.size());
+    }
+
+    @Test
+    void testRequestZeroAndNegative() {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscriptionRef.set(s);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+                errorRef.set(throwable);
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        subscriptionRef.get().request(0);
+        Assertions.assertTrue(errorRef.get() instanceof IllegalArgumentException);
+
+        errorRef.set(null);
+        subscriptionRef.get().request(-1);
+        Assertions.assertTrue(errorRef.get() instanceof IllegalArgumentException);
+    }
+
+    @Test
+    void testCapacityChannelInUnboundedMode() throws Exception {
+        final ReactiveDataConsumer consumer = new ReactiveDataConsumer();
+        final ByteBuffer data = ByteBuffer.wrap(new byte[1024]);
+        final AtomicInteger lastIncrement = new AtomicInteger(-1);
+        final CapacityChannel channel = lastIncrement::set;
+        consumer.updateCapacity(channel);
+
+        final AtomicInteger received = new AtomicInteger(0);
+        final AtomicReference<Subscription> subscriptionRef = new AtomicReference<>();
+        consumer.subscribe(new Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(final Subscription s) {
+                subscriptionRef.set(s);
+            }
+
+            @Override
+            public void onNext(final ByteBuffer byteBuffer) {
+                received.incrementAndGet();
+            }
+
+            @Override
+            public void onError(final Throwable throwable) {
+            }
+
+            @Override
+            public void onComplete() {
+            }
+        });
+
+        consumer.consume(data.duplicate());
+        consumer.consume(data.duplicate());
+        subscriptionRef.get().request(Long.MAX_VALUE);
+        Assertions.assertEquals(2 * 1024, lastIncrement.get());
+
+        consumer.consume(data.duplicate());
+        Assertions.assertEquals(1024, lastIncrement.get());
+    }
 }

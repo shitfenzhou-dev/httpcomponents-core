@@ -137,10 +137,17 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     return;
                 }
                 ByteBuffer next;
-                while (requests.get() > 0 && (next = buffers.poll()) != null) {
+                while ((next = buffers.poll()) != null) {
+                    final long currentRequests = requests.get();
+                    if (currentRequests <= 0) {
+                        buffers.add(next);
+                        break;
+                    }
                     final int bytesFreed = next.remaining();
                     s.onNext(next);
-                    requests.decrementAndGet();
+                    if (currentRequests != Long.MAX_VALUE) {
+                        requests.decrementAndGet();
+                    }
                     windowScalingIncrement.addAndGet(bytesFreed);
                 }
                 final CapacityChannel localChannel = capacityChannel;
@@ -165,6 +172,26 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
         }
     }
 
+    private long saturatingAdd(final long current, final long increment) {
+        final long result = current + increment;
+        if (current > 0 && increment > 0 && result < 0) {
+            return Long.MAX_VALUE;
+        }
+        return result;
+    }
+
+    private void safeRequest(final long increment) {
+        long current;
+        long newVal;
+        do {
+            current = requests.get();
+            if (current == Long.MAX_VALUE) {
+                return;
+            }
+            newVal = saturatingAdd(current, increment);
+        } while (!requests.compareAndSet(current, newVal));
+    }
+
     @Override
     public void subscribe(final Subscriber<? super ByteBuffer> subscriber) {
         this.subscriber = Args.notNull(subscriber, "subscriber");
@@ -175,7 +202,7 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     failed(new IllegalArgumentException("The number of elements requested must be strictly positive"));
                     return;
                 }
-                requests.addAndGet(increment);
+                safeRequest(increment);
                 flushToSubscriber();
             }
 
