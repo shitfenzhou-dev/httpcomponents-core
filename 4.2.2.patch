@@ -1,0 +1,275 @@
+diff --git a/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java b/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
+index 4a9012fcb..e0e9c4224 100644
+--- a/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
++++ b/httpcore5-jackson2/src/main/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReader.java
+@@ -39,6 +39,7 @@
+ import org.apache.hc.core5.jackson2.JsonResultSink;
+ import org.apache.hc.core5.jackson2.TokenBufferAssembler;
+ import org.apache.hc.core5.jackson2.TopLevelArrayTokenFilter;
++import org.apache.hc.core5.util.Args;
+ 
+ /**
+  * Event-driven bulk JSON reader that can read arrays of objects while buffering only a single
+@@ -56,7 +57,19 @@ public JsonBulkArrayReader(final ObjectMapper objectMapper) {
+         this.jsonTokenizer = new JsonAsyncTokenizer(objectMapper.getFactory());
+     }
+ 
++    public <T> void initialize(final Class<T> clazz, final JsonResultSink<T> resultSink) throws IOException {
++        Args.notNull(clazz, "Class");
++        Args.notNull(resultSink, "Result sink");
++        initialize(objectMapper.constructType(clazz), resultSink);
++    }
++
+     public <T> void initialize(final TypeReference<T> typeReference, final JsonResultSink<T> resultSink) throws IOException {
++        Args.notNull(typeReference, "Type reference");
++        Args.notNull(resultSink, "Result sink");
++        initialize(objectMapper.constructType(typeReference), resultSink);
++    }
++
++    private <T> void initialize(final com.fasterxml.jackson.databind.JavaType javaType, final JsonResultSink<T> resultSink) {
+         this.jsonTokenizer.initialize(new TopLevelArrayTokenFilter(new TokenBufferAssembler(new JsonResultSink<TokenBuffer>() {
+ 
+             @Override
+@@ -68,7 +81,7 @@ public void begin(final int sizeHint) {
+             public void accept(final TokenBuffer tokenBuffer) {
+                 try {
+                     final JsonParser jsonParser = tokenBuffer != null ? tokenBuffer.asParserOnFirstToken() : null;
+-                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, typeReference) : null;
++                    final T result = jsonParser != null ? objectMapper.readValue(jsonParser, javaType) : null;
+                     if (result != null) {
+                         resultSink.accept(result);
+                     }
+diff --git a/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java b/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
+index 690ac18ad..b51f88018 100644
+--- a/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
++++ b/httpcore5-jackson2/src/test/java/org/apache/hc/core5/jackson2/bulk/JsonBulkArrayReaderTest.java
+@@ -26,10 +26,12 @@
+  */
+ package org.apache.hc.core5.jackson2.bulk;
+ 
++import java.io.IOException;
+ import java.io.InputStream;
+ import java.net.URI;
+ import java.net.URL;
+ import java.nio.ByteBuffer;
++import java.nio.charset.StandardCharsets;
+ import java.util.ArrayList;
+ import java.util.HashMap;
+ import java.util.List;
+@@ -39,33 +41,15 @@
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ 
+ import org.apache.hc.core5.http.message.BasicHeader;
++import org.apache.hc.core5.jackson2.JsonResultSink;
+ import org.apache.hc.core5.jackson2.http.RequestData;
+ import org.assertj.core.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
+ public class JsonBulkArrayReaderTest {
+ 
+-    @Test
+-    void testJsonArrayReading() throws Exception {
+-        final JsonFactory factory = new JsonFactory();
+-        final ObjectMapper objectMapper = new ObjectMapper(factory);
+-
+-        final URL resource = getClass().getResource("/sample6.json");
+-        Assertions.assertThat(resource).isNotNull();
+-
+-        final List<RequestData> jsonDataList = new ArrayList<>();
+-        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
+-        bulkArrayReader.initialize(new TypeReference<RequestData>() {
+-        }, jsonDataList::add);
+-        try (final InputStream inputStream = resource.openStream()) {
+-            int l;
+-            final byte[] tmp = new byte[4096];
+-            while ((l = inputStream.read(tmp)) != -1) {
+-                bulkArrayReader.consume(ByteBuffer.wrap(tmp, 0, l));
+-            }
+-            bulkArrayReader.streamEnd();
+-        }
+-
++    private List<RequestData> createExpectedObjects() {
++        final List<RequestData> list = new ArrayList<>();
+         final RequestData expectedObject1 = new RequestData();
+         expectedObject1.setId(0);
+         expectedObject1.setUrl(URI.create("http://httpbin.org/stream/3"));
+@@ -82,8 +66,7 @@ void testJsonArrayReading() throws Exception {
+                 new BasicHeader("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                         "snap Chromium/71.0.3578.98 Chrome/71.0.3578.98 Safari/537.36"));
+         expectedObject1.setOrigin("xxx.xxx.xxx.xxx");
+-
+-        Assertions.assertThat(jsonDataList.get(0)).usingRecursiveComparison().isEqualTo(expectedObject1);
++        list.add(expectedObject1);
+ 
+         final RequestData expectedObject2 = new RequestData();
+         expectedObject2.setId(1);
+@@ -101,8 +84,7 @@ void testJsonArrayReading() throws Exception {
+                 new BasicHeader("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                         "snap Chromium/71.0.3578.98 Chrome/71.0.3578.98 Safari/537.36"));
+         expectedObject2.setOrigin("xxx.xxx.xxx.xxx");
+-
+-        Assertions.assertThat(jsonDataList.get(1)).usingRecursiveComparison().isEqualTo(expectedObject2);
++        list.add(expectedObject2);
+ 
+         final RequestData expectedObject3 = new RequestData();
+         expectedObject3.setId(2);
+@@ -120,8 +102,158 @@ void testJsonArrayReading() throws Exception {
+                 new BasicHeader("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                         "snap Chromium/71.0.3578.98 Chrome/71.0.3578.98 Safari/537.36"));
+         expectedObject3.setOrigin("xxx.xxx.xxx.xxx");
++        list.add(expectedObject3);
++
++        return list;
++    }
++
++    @Test
++    void testJsonArrayReading() throws Exception {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++
++        final URL resource = getClass().getResource("/sample6.json");
++        Assertions.assertThat(resource).isNotNull();
++
++        final List<RequestData> jsonDataList = new ArrayList<>();
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++        bulkArrayReader.initialize(new TypeReference<RequestData>() {
++        }, jsonDataList::add);
++        try (final InputStream inputStream = resource.openStream()) {
++            int l;
++            final byte[] tmp = new byte[4096];
++            while ((l = inputStream.read(tmp)) != -1) {
++                bulkArrayReader.consume(ByteBuffer.wrap(tmp, 0, l));
++            }
++            bulkArrayReader.streamEnd();
++        }
++
++        final List<RequestData> expectedObjects = createExpectedObjects();
++        Assertions.assertThat(jsonDataList.get(0)).usingRecursiveComparison().isEqualTo(expectedObjects.get(0));
++        Assertions.assertThat(jsonDataList.get(1)).usingRecursiveComparison().isEqualTo(expectedObjects.get(1));
++        Assertions.assertThat(jsonDataList.get(2)).usingRecursiveComparison().isEqualTo(expectedObjects.get(2));
++    }
++
++    @Test
++    void testJsonArrayReadingWithClass() throws Exception {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++
++        final URL resource = getClass().getResource("/sample6.json");
++        Assertions.assertThat(resource).isNotNull();
+ 
+-        Assertions.assertThat(jsonDataList.get(2)).usingRecursiveComparison().isEqualTo(expectedObject3);
++        final List<RequestData> jsonDataList = new ArrayList<>();
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++        bulkArrayReader.initialize(RequestData.class, jsonDataList::add);
++        try (final InputStream inputStream = resource.openStream()) {
++            int l;
++            final byte[] tmp = new byte[4096];
++            while ((l = inputStream.read(tmp)) != -1) {
++                bulkArrayReader.consume(ByteBuffer.wrap(tmp, 0, l));
++            }
++            bulkArrayReader.streamEnd();
++        }
++
++        final List<RequestData> expectedObjects = createExpectedObjects();
++        Assertions.assertThat(jsonDataList.get(0)).usingRecursiveComparison().isEqualTo(expectedObjects.get(0));
++        Assertions.assertThat(jsonDataList.get(1)).usingRecursiveComparison().isEqualTo(expectedObjects.get(1));
++        Assertions.assertThat(jsonDataList.get(2)).usingRecursiveComparison().isEqualTo(expectedObjects.get(2));
++    }
++
++    static class SimplePojo {
++        private int id;
++        public int getId() { return id; }
++        public void setId(final int id) { this.id = id; }
++    }
++
++    @Test
++    void testMemoryJsonArrayReadingWithClass() throws Exception {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++
++        final List<SimplePojo> list = new ArrayList<>();
++        final List<String> events = new ArrayList<>();
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++        bulkArrayReader.initialize(SimplePojo.class, new JsonResultSink<SimplePojo>() {
++            @Override
++            public void begin(final int sizeHint) {
++                events.add("begin");
++            }
++
++            @Override
++            public void accept(final SimplePojo result) {
++                list.add(result);
++                events.add("accept");
++            }
++
++            @Override
++            public void end() {
++                events.add("end");
++            }
++        });
++
++        final byte[] data = "[{\"id\":1},{\"id\":2}]".getBytes(StandardCharsets.UTF_8);
++        bulkArrayReader.consume(ByteBuffer.wrap(data));
++        bulkArrayReader.streamEnd();
++
++        Assertions.assertThat(list).hasSize(2);
++        Assertions.assertThat(list.get(0).getId()).isEqualTo(1);
++        Assertions.assertThat(list.get(1).getId()).isEqualTo(2);
++
++        Assertions.assertThat(events).containsExactly("begin", "accept", "accept", "end");
++    }
++
++    @Test
++    void testNullChecks() {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++
++        Assertions.assertThrows(NullPointerException.class, () ->
++                bulkArrayReader.initialize((Class<Object>) null, result -> {}));
++        Assertions.assertThrows(NullPointerException.class, () ->
++                bulkArrayReader.initialize(Object.class, null));
++
++        Assertions.assertThrows(NullPointerException.class, () ->
++                bulkArrayReader.initialize((TypeReference<Object>) null, result -> {}));
++        Assertions.assertThrows(NullPointerException.class, () ->
++                bulkArrayReader.initialize(new TypeReference<Object>() {}, null));
++    }
++
++    @Test
++    void testChunkedReadingWithClass() throws Exception {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++
++        final List<SimplePojo> list = new ArrayList<>();
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++        bulkArrayReader.initialize(SimplePojo.class, list::add);
++
++        final byte[] data = "[{\"id\":1},{\"id\":2}]".getBytes(StandardCharsets.UTF_8);
++        for (final byte b : data) {
++            bulkArrayReader.consume(ByteBuffer.wrap(new byte[] { b }));
++        }
++        bulkArrayReader.streamEnd();
++
++        Assertions.assertThat(list).hasSize(2);
++        Assertions.assertThat(list.get(0).getId()).isEqualTo(1);
++        Assertions.assertThat(list.get(1).getId()).isEqualTo(2);
++    }
++
++    @Test
++    void testMalformedJsonException() {
++        final JsonFactory factory = new JsonFactory();
++        final ObjectMapper objectMapper = new ObjectMapper(factory);
++
++        final List<SimplePojo> list = new ArrayList<>();
++        final JsonBulkArrayReader bulkArrayReader = new JsonBulkArrayReader(objectMapper);
++        bulkArrayReader.initialize(SimplePojo.class, list::add);
++
++        final byte[] data = "[{\"id\":1},{\"id\":bad}]".getBytes(StandardCharsets.UTF_8);
++        Assertions.assertThrows(IOException.class, () -> {
++            bulkArrayReader.consume(ByteBuffer.wrap(data));
++            bulkArrayReader.streamEnd();
++        });
+     }
+ 
+ }
