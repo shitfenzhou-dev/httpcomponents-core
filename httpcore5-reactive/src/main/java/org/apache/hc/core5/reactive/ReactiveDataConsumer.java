@@ -140,7 +140,7 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                 while (requests.get() > 0 && (next = buffers.poll()) != null) {
                     final int bytesFreed = next.remaining();
                     s.onNext(next);
-                    requests.decrementAndGet();
+                    requests.updateAndGet(current -> current == Long.MAX_VALUE ? Long.MAX_VALUE : current - 1);
                     windowScalingIncrement.addAndGet(bytesFreed);
                 }
                 final CapacityChannel localChannel = capacityChannel;
