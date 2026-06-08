@@ -29,10 +29,15 @@ package org.apache.hc.core5.util;
 
 import java.text.ParseException;
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
@@ -236,33 +241,166 @@ public class TimeValue implements Comparable<TimeValue> {
         }
     }
 
+    private static final Pattern NUMBER_UNIT_PATTERN = Pattern.compile("([+-]?\\d+)\\s*([a-zA-Z]+)");
+
+    private static final Map<String, TimeUnit> SHORT_UNIT_MAP = new HashMap<>();
+    static {
+        SHORT_UNIT_MAP.put("NS", TimeUnit.NANOSECONDS);
+        SHORT_UNIT_MAP.put("US", TimeUnit.MICROSECONDS);
+        SHORT_UNIT_MAP.put("MS", TimeUnit.MILLISECONDS);
+        SHORT_UNIT_MAP.put("S", TimeUnit.SECONDS);
+        SHORT_UNIT_MAP.put("M", TimeUnit.MINUTES);
+        SHORT_UNIT_MAP.put("H", TimeUnit.HOURS);
+        SHORT_UNIT_MAP.put("D", TimeUnit.DAYS);
+    }
+
     /**
-     * Parses a TimeValue in the format {@code <Long><SPACE><TimeUnit>}, for example {@code "1200 MILLISECONDS"}.
+     * Parses a TimeValue from a string representation.
      * <p>
-     * Parses:
+     * Supported formats:
      * </p>
      * <ul>
-     * <li>{@code "1200 MILLISECONDS"}.</li>
-     * <li>{@code " 1200 MILLISECONDS "}, spaces are ignored.</li>
-     * <li>{@code "1 MINUTE"}, singular units.</li>
-     * <li></li>
+     * <li>{@code "1200 MILLISECONDS"} — legacy long-unit format.</li>
+     * <li>{@code "1 MINUTE"} — legacy singular unit.</li>
+     * <li>{@code "250ms"}, {@code "250 ms"} — short unit with optional space.</li>
+     * <li>{@code "+30s"}, {@code "-1 ms"} — signed compact forms.</li>
+     * <li>{@code "PT0.25S"}, {@code "PT1H30M"}, {@code "P1D"} — ISO-8601 duration.</li>
      * </ul>
      *
-     *
-     * @param value the TimeValue to parse
-     * @return a new TimeValue
-     * @throws ParseException if the number cannot be parsed
+     * @param value the TimeValue string to parse.
+     * @return a new TimeValue.
+     * @throws ParseException if the value cannot be parsed.
      */
     public static TimeValue parse(final String value) throws ParseException {
-        final String split[] = value.trim().split("\\s+");
-        if (split.length < 2) {
-            throw new IllegalArgumentException(
-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
+        if (value == null) {
+            throw new ParseException("TimeValue must not be null", 0);
         }
-        final String clean0 = split[0].trim();
-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+        final String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            throw new ParseException("TimeValue must not be empty or only whitespace", 0);
+        }
+
+        if (isIso8601(trimmed)) {
+            return parseIso8601(trimmed);
+        }
+
+        final Matcher matcher = NUMBER_UNIT_PATTERN.matcher(trimmed);
+        if (matcher.matches()) {
+            final String numStr = matcher.group(1);
+            final String unitStr = matcher.group(2);
+            final long number;
+            try {
+                number = Long.parseLong(numStr);
+            } catch (final NumberFormatException e) {
+                throw new ParseException(
+                        "Invalid numeric value '" + numStr + "' in TimeValue '" + value
+                                + "'. Supported formats: '<long> <unit>' (e.g. '250ms', '1 SECOND'), "
+                                + "'P...' ISO-8601 duration (e.g. 'PT2H', 'P1D')",
+                        0);
+            }
+            final TimeUnit unit = resolveTimeUnit(unitStr, value);
+            return TimeValue.of(number, unit);
+        }
+
+        throw new ParseException(
+                "Invalid TimeValue format: '" + value
+                        + "'. Supported formats: '<long><unit>' or '<long> <unit>' "
+                        + "(e.g. '250ms', '1 SECOND', '+30s', '-1 ms'), "
+                        + "'P...' ISO-8601 duration (e.g. 'PT2H', 'PT0.25S', 'P1D')",
+                0);
+    }
+
+    private static boolean isIso8601(final String trimmed) {
+        final int len = trimmed.length();
+        if (len < 2) {
+            return false;
+        }
+        char c = trimmed.charAt(0);
+        int start = 0;
+        if (c == '+' || c == '-') {
+            if (len < 3) {
+                return false;
+            }
+            start = 1;
+        }
+        c = trimmed.charAt(start);
+        return c == 'P' || c == 'p';
+    }
+
+    private static TimeValue parseIso8601(final String value) throws ParseException {
+        final Duration duration;
+        try {
+            duration = Duration.parse(value);
+        } catch (final DateTimeParseException e) {
+            throw new ParseException(
+                    "Invalid ISO-8601 duration: '" + value
+                            + "'. Expected format: PnDTnHnMn.nS (e.g. 'PT2H', 'PT0.25S', 'P1D')",
+                    0);
+        }
+        return fromDurationLossless(duration, value);
+    }
+
+    private static TimeValue fromDurationLossless(final Duration duration, final String original) throws ParseException {
+        final long seconds = duration.getSeconds();
+        final int nanos = duration.getNano();
+
+        if (seconds == 0 && nanos == 0) {
+            return ZERO_MILLISECONDS;
+        }
+
+        if (nanos == 0) {
+            if (seconds % 86400 == 0) {
+                return of(seconds / 86400, TimeUnit.DAYS);
+            }
+            if (seconds % 3600 == 0) {
+                return of(seconds / 3600, TimeUnit.HOURS);
+            }
+            if (seconds % 60 == 0) {
+                return of(seconds / 60, TimeUnit.MINUTES);
+            }
+            return of(seconds, TimeUnit.SECONDS);
+        }
+
+        if (nanos % 1000000 == 0) {
+            try {
+                final long millis = Math.addExact(Math.multiplyExact(seconds, 1000L), (long) (nanos / 1000000));
+                return of(millis, TimeUnit.MILLISECONDS);
+            } catch (final ArithmeticException ignored) {
+            }
+        }
+        if (nanos % 1000 == 0) {
+            try {
+                final long micros = Math.addExact(Math.multiplyExact(seconds, 1000000L), (long) (nanos / 1000));
+                return of(micros, TimeUnit.MICROSECONDS);
+            } catch (final ArithmeticException ignored) {
+            }
+        }
+        try {
+            final long totalNanos = Math.addExact(Math.multiplyExact(seconds, 1000000000L), (long) nanos);
+            return of(totalNanos, TimeUnit.NANOSECONDS);
+        } catch (final ArithmeticException e) {
+            throw new ParseException(
+                    "ISO-8601 duration value too large to represent as nanoseconds: '" + original + "'",
+                    0);
+        }
+    }
+
+    private static TimeUnit resolveTimeUnit(final String unitStr, final String originalValue) throws ParseException {
+        final String upper = unitStr.toUpperCase(Locale.ROOT);
+        final TimeUnit shortUnit = SHORT_UNIT_MAP.get(upper);
+        if (shortUnit != null) {
+            return shortUnit;
+        }
+        try {
+            final String normalized = upper.endsWith("S") ? upper : upper + "S";
+            return TimeUnit.valueOf(normalized);
+        } catch (final IllegalArgumentException e) {
+            throw new ParseException(
+                    "Unknown time unit '" + unitStr + "' in '" + originalValue
+                            + "'. Supported units: ns, us, ms, s, m, h, d, "
+                            + "NANOSECONDS, MICROSECONDS, MILLISECONDS, SECONDS, MINUTES, HOURS, DAYS",
+                    0);
+        }
     }
 
     private final long duration;
