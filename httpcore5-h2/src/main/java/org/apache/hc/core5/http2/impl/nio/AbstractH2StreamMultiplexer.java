@@ -1235,6 +1235,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             throw new H2StreamResetException(H2Error.STREAM_CLOSED, "Stream already closed");
         }
         final int streamId = frame.getStreamId() & 0x7fffffff;
+        continuation.incrementContinuationCount();
         final ByteBuffer payload = frame.getPayload();
         continuation.copyPayload(payload);
         if (frame.isFlagSet(FrameFlag.END_HEADERS)) {
@@ -1456,32 +1457,35 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         final boolean endStream;
         final ByteArrayBuffer headerBuffer;
         final int maxContinuation;
-        final boolean enforceMacContinuations;
+        final boolean enforceMaxContinuations;
 
-        private int count;
+        private int continuationCount;
 
         private Continuation(final int streamId, final int type, final boolean endStream, final int maxContinuation) {
             this.streamId = streamId;
             this.type = type;
             this.endStream = endStream;
             this.maxContinuation = maxContinuation;
-            this.enforceMacContinuations = maxContinuation < Integer.MAX_VALUE;
+            this.enforceMaxContinuations = maxContinuation > 0;
             this.headerBuffer = new ByteArrayBuffer(1024);
         }
 
-        void copyPayload(final ByteBuffer payload) throws H2ConnectionException {
+        void copyPayload(final ByteBuffer payload) {
             if (payload == null) {
                 return;
             }
-            if (enforceMacContinuations && count > maxContinuation) {
-                throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
-            }
-            count++;
             final int originalLength = headerBuffer.length();
             final int toCopy = payload.remaining();
             headerBuffer.ensureCapacity(toCopy);
             payload.get(headerBuffer.array(), originalLength, toCopy);
             headerBuffer.setLength(originalLength + toCopy);
+        }
+
+        void incrementContinuationCount() throws H2ConnectionException {
+            continuationCount++;
+            if (enforceMaxContinuations && continuationCount > maxContinuation) {
+                throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
+            }
         }
 
         ByteBuffer getContent() {
