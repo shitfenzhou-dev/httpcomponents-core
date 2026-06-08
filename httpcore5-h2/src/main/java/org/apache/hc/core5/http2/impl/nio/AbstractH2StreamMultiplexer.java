@@ -1175,7 +1175,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             }
             promisedStream.consumePromise(headers);
         } else {
-            continuation.copyPayload(payload);
+            continuation.copyInitial(payload);
         }
     }
 
@@ -1226,7 +1226,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             recordPriorityFromHeaders(stream, headers);
             stream.consumeHeader(headers, frame.isFlagSet(FrameFlag.END_STREAM));
         } else {
-            continuation.copyPayload(payload);
+            continuation.copyInitial(payload);
         }
     }
 
@@ -1456,7 +1456,7 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
         final boolean endStream;
         final ByteArrayBuffer headerBuffer;
         final int maxContinuation;
-        final boolean enforceMacContinuations;
+        final boolean enforceMaxContinuations;
 
         private int count;
 
@@ -1465,23 +1465,32 @@ abstract class AbstractH2StreamMultiplexer implements Identifiable, HttpConnecti
             this.type = type;
             this.endStream = endStream;
             this.maxContinuation = maxContinuation;
-            this.enforceMacContinuations = maxContinuation < Integer.MAX_VALUE;
+            this.enforceMaxContinuations = maxContinuation > 0 && maxContinuation < Integer.MAX_VALUE;
             this.headerBuffer = new ByteArrayBuffer(1024);
         }
 
-        void copyPayload(final ByteBuffer payload) throws H2ConnectionException {
-            if (payload == null) {
-                return;
+        void copyInitial(final ByteBuffer payload) {
+            if (payload != null && payload.hasRemaining()) {
+                final int originalLength = headerBuffer.length();
+                final int toCopy = payload.remaining();
+                headerBuffer.ensureCapacity(toCopy);
+                payload.get(headerBuffer.array(), originalLength, toCopy);
+                headerBuffer.setLength(originalLength + toCopy);
             }
-            if (enforceMacContinuations && count > maxContinuation) {
+        }
+
+        void copyPayload(final ByteBuffer payload) throws H2ConnectionException {
+            if (enforceMaxContinuations && count >= maxContinuation) {
                 throw new H2ConnectionException(H2Error.ENHANCE_YOUR_CALM, "Excessive number of continuation frames");
             }
             count++;
-            final int originalLength = headerBuffer.length();
-            final int toCopy = payload.remaining();
-            headerBuffer.ensureCapacity(toCopy);
-            payload.get(headerBuffer.array(), originalLength, toCopy);
-            headerBuffer.setLength(originalLength + toCopy);
+            if (payload != null && payload.hasRemaining()) {
+                final int originalLength = headerBuffer.length();
+                final int toCopy = payload.remaining();
+                headerBuffer.ensureCapacity(toCopy);
+                payload.get(headerBuffer.array(), originalLength, toCopy);
+                headerBuffer.setLength(originalLength + toCopy);
+            }
         }
 
         ByteBuffer getContent() {

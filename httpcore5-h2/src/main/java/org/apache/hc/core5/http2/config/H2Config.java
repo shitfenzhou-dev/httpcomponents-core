@@ -142,7 +142,8 @@ public class H2Config {
                 .setInitialWindowSize(config.getInitialWindowSize())
                 .setMaxFrameSize(config.getMaxFrameSize())
                 .setMaxHeaderListSize(config.getMaxHeaderListSize())
-                .setCompressionEnabled(config.isCompressionEnabled());
+                .setCompressionEnabled(config.isCompressionEnabled())
+                .setMaxContinuations(config.getMaxContinuations());
     }
 
     public static class Builder {
@@ -205,10 +206,12 @@ public class H2Config {
         }
 
         /**
-         * Sets max limit on number of continuations.
-         * <p>value zero represents no limit</p>
+         * Sets max limit on number of CONTINUATION frames.
+         * <p>A value of zero or {@link Integer#MAX_VALUE} disables the limit.
+         * Only CONTINUATION frames are counted; the initial HEADERS or
+         * PUSH_PROMISE frame is not counted against the limit.</p>
          *
-         * @since 5,4
+         * @since 5.4
          */
         public Builder setMaxContinuations(final int maxContinuations) {
             Args.notNegative(maxContinuations, "Max continuations");
