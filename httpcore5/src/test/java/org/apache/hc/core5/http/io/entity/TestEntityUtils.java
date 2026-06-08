@@ -303,4 +303,99 @@ class TestEntityUtils {
         }
     }
 
+    @Test
+    void testToByteArrayZeroLength() throws IOException {
+        final byte[] content = "test".getBytes(StandardCharsets.US_ASCII);
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(content), content.length, null);
+        final byte[] result = EntityUtils.toByteArray(entity, 0);
+        Assertions.assertNotNull(result);
+        Assertions.assertEquals(0, result.length);
+    }
+
+    @Test
+    void testToByteArrayVariousMaxLengths() throws IOException {
+        final String content = "Hello World";
+        final byte[] allBytes = content.getBytes(StandardCharsets.US_ASCII);
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+
+        final byte[] result1 = EntityUtils.toByteArray(entity, 1);
+        Assertions.assertEquals(1, result1.length);
+        Assertions.assertEquals(allBytes[0], result1[0]);
+
+        // 重新创建 entity，因为 InputStream 被消耗了
+        final BasicHttpEntity entity2 = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+        final byte[] result2 = EntityUtils.toByteArray(entity2, 2);
+        Assertions.assertEquals(2, result2.length);
+        Assertions.assertEquals(allBytes[0], result2[0]);
+        Assertions.assertEquals(allBytes[1], result2[1]);
+
+        // 重新创建 entity
+        final BasicHttpEntity entity3 = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+        final byte[] result3 = EntityUtils.toByteArray(entity3, allBytes.length - 1);
+        Assertions.assertEquals(allBytes.length - 1, result3.length);
+        for (int i = 0; i < allBytes.length - 1; i++) {
+            Assertions.assertEquals(allBytes[i], result3[i]);
+        }
+    }
+
+    @Test
+    void testToByteArrayUnknownContentLengthLarge() throws IOException {
+        final byte b = 'x';
+        final int contentLength = 8192; // 大于 DEFAULT_BYTE_BUFFER_SIZE
+        final byte[] allBytes = new byte[contentLength];
+        Arrays.fill(allBytes, b);
+
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), -1, null);
+        final int maxResultLength = 100;
+        final byte[] result = EntityUtils.toByteArray(entity, maxResultLength);
+
+        Assertions.assertNotNull(result);
+        Assertions.assertEquals(maxResultLength, result.length);
+        for (int i = 0; i < maxResultLength; i++) {
+            Assertions.assertEquals(b, result[i]);
+        }
+    }
+
+    @Test
+    void testToStringAsciiMaxLength() throws IOException, ParseException {
+        final String content = "This is a test string";
+        final byte[] allBytes = content.getBytes(StandardCharsets.US_ASCII);
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+
+        final int maxLength = 4;
+        final String result = EntityUtils.toString(entity, StandardCharsets.US_ASCII, maxLength);
+
+        Assertions.assertNotNull(result);
+        Assertions.assertEquals(maxLength, result.length());
+        Assertions.assertEquals(content.substring(0, maxLength), result);
+    }
+
+    @Test
+    void testToStringUtf8MultibyteMaxLength() throws IOException, ParseException {
+        final String content = "你好世界Hello World";
+        final byte[] allBytes = content.getBytes(StandardCharsets.UTF_8);
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, null);
+
+        final int maxLength = 4;
+        final String result = EntityUtils.toString(entity, StandardCharsets.UTF_8, maxLength);
+
+        Assertions.assertNotNull(result);
+        Assertions.assertTrue(result.length() <= maxLength);
+    }
+
+    @Test
+    void testParseWithMaxStreamLength() throws IOException {
+        final String content = "key1=value1&key2=value2&key3=value3";
+        final byte[] allBytes = content.getBytes(StandardCharsets.UTF_8);
+        final BasicHttpEntity entity = new BasicHttpEntity(new ByteArrayInputStream(allBytes), allBytes.length, ContentType.APPLICATION_FORM_URLENCODED);
+
+        // 只读取到 key1=value1&ke 的位置
+        final int maxStreamLength = 14;
+        final List<NameValuePair> result = EntityUtils.parse(entity, maxStreamLength);
+
+        // 应该只能解析到 key1=value1，因为截断后的字符串是 "key1=value1&ke"，解析时会处理到 & 之前
+        Assertions.assertEquals(1, result.size());
+        Assertions.assertEquals("key1", result.get(0).getName());
+        Assertions.assertEquals("value1", result.get(0).getValue());
+    }
 }
