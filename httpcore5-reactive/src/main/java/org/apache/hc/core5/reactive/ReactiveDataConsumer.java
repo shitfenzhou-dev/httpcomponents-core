@@ -137,11 +137,21 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     return;
                 }
                 ByteBuffer next;
-                while (requests.get() > 0 && (next = buffers.poll()) != null) {
-                    final int bytesFreed = next.remaining();
-                    s.onNext(next);
-                    requests.decrementAndGet();
-                    windowScalingIncrement.addAndGet(bytesFreed);
+                while ((next = buffers.peek()) != null && requests.get() > 0) {
+                    if (requests.get() >= Long.MAX_VALUE) {
+                        buffers.poll();
+                        final int bytesFreed = next.remaining();
+                        s.onNext(next);
+                        windowScalingIncrement.addAndGet(bytesFreed);
+                    } else {
+                        if (!tryDecrementRequests()) {
+                            break;
+                        }
+                        buffers.poll();
+                        final int bytesFreed = next.remaining();
+                        s.onNext(next);
+                        windowScalingIncrement.addAndGet(bytesFreed);
+                    }
                 }
                 final CapacityChannel localChannel = capacityChannel;
                 if (localChannel != null) {
@@ -165,6 +175,36 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
         }
     }
 
+    private static long saturatedAdd(AtomicLong field, long increment) {
+        while (true) {
+            long current = field.get();
+            if (current == Long.MAX_VALUE) {
+                return Long.MAX_VALUE;
+            }
+            long next;
+            if (current > Long.MAX_VALUE - increment) {
+                next = Long.MAX_VALUE;
+            } else {
+                next = current + increment;
+            }
+            if (field.compareAndSet(current, next)) {
+                return next;
+            }
+        }
+    }
+
+    private boolean tryDecrementRequests() {
+        while (true) {
+            long current = requests.get();
+            if (current >= Long.MAX_VALUE || current <= 0) {
+                return false;
+            }
+            if (requests.compareAndSet(current, current - 1)) {
+                return true;
+            }
+        }
+    }
+
     @Override
     public void subscribe(final Subscriber<? super ByteBuffer> subscriber) {
         this.subscriber = Args.notNull(subscriber, "subscriber");
@@ -175,7 +215,7 @@ final class ReactiveDataConsumer implements AsyncDataConsumer, Publisher<ByteBuf
                     failed(new IllegalArgumentException("The number of elements requested must be strictly positive"));
                     return;
                 }
-                requests.addAndGet(increment);
+                saturatedAdd(requests, increment);
                 flushToSubscriber();
             }
 
