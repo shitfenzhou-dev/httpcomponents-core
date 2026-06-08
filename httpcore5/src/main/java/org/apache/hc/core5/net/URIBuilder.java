@@ -680,7 +680,10 @@ public class URIBuilder {
      * @return this instance.
      */
     public URIBuilder appendPathSegments(final String... pathSegments) {
-        return appendPathSegments(Arrays.asList(pathSegments));
+        if (pathSegments != null) {
+            return appendPathSegments(Arrays.asList(pathSegments));
+        }
+        return this;
     }
 
     /**
