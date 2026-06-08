@@ -254,15 +254,133 @@ public class TimeValue implements Comparable<TimeValue> {
      * @throws ParseException if the number cannot be parsed
      */
     public static TimeValue parse(final String value) throws ParseException {
-        final String split[] = value.trim().split("\\s+");
-        if (split.length < 2) {
-            throw new IllegalArgumentException(
-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
+        if (value == null) {
+            throw new ParseException("TimeValue string cannot be null", 0);
         }
-        final String clean0 = split[0].trim();
-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+        final String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            throw new ParseException("TimeValue string cannot be empty or blank", 0);
+        }
+        if (trimmed.startsWith("P") || trimmed.startsWith("-P") || trimmed.startsWith("+P") ||
+                trimmed.startsWith("p") || trimmed.startsWith("-p") || trimmed.startsWith("+p")) {
+            return parseIso8601(trimmed, value);
+        }
+        return parseFormat(trimmed);
+    }
+
+    private static TimeValue parseIso8601(final String trimmed, final String originalValue) throws ParseException {
+        try {
+            final Duration duration = Duration.parse(trimmed);
+            return fromDurationLossless(duration, originalValue);
+        } catch (final Exception e) {
+            if (e instanceof ParseException) {
+                throw (ParseException) e;
+            }
+            throw (ParseException) new ParseException(String.format("Invalid ISO-8601 duration: '%s'.", originalValue), 0).initCause(e);
+        }
+    }
+
+    private static TimeValue fromDurationLossless(final Duration duration, final String originalValue) throws ParseException {
+        final long seconds = duration.getSeconds();
+        final int nanos = duration.getNano();
+
+        try {
+            if (nanos != 0) {
+                if (nanos % 1_000_000 == 0) {
+                    final long millis = Math.addExact(Math.multiplyExact(seconds, 1000L), nanos / 1_000_000L);
+                    return TimeValue.of(millis, TimeUnit.MILLISECONDS);
+                }
+                if (nanos % 1_000 == 0) {
+                    final long micros = Math.addExact(Math.multiplyExact(seconds, 1_000_000L), nanos / 1_000L);
+                    return TimeValue.of(micros, TimeUnit.MICROSECONDS);
+                }
+                final long totalNanos = Math.addExact(Math.multiplyExact(seconds, 1_000_000_000L), nanos);
+                return TimeValue.of(totalNanos, TimeUnit.NANOSECONDS);
+            } else {
+                if (seconds % (24 * 3600) == 0) {
+                    return TimeValue.of(seconds / (24 * 3600), TimeUnit.DAYS);
+                }
+                if (seconds % 3600 == 0) {
+                    return TimeValue.of(seconds / 3600, TimeUnit.HOURS);
+                }
+                if (seconds % 60 == 0) {
+                    return TimeValue.of(seconds / 60, TimeUnit.MINUTES);
+                }
+                return TimeValue.of(seconds, TimeUnit.SECONDS);
+            }
+        } catch (final ArithmeticException e) {
+            throw (ParseException) new ParseException(String.format("ISO-8601 duration too large to represent as TimeValue: '%s'", originalValue), 0).initCause(e);
+        }
+    }
+
+    private static TimeValue parseFormat(final String value) throws ParseException {
+        int unitIndex = -1;
+        for (int i = 0; i < value.length(); i++) {
+            final char c = value.charAt(i);
+            if (!Character.isDigit(c) && c != '+' && c != '-' && c != '.' && !Character.isWhitespace(c)) {
+                unitIndex = i;
+                break;
+            }
+        }
+        if (unitIndex == -1) {
+            throw new ParseException(String.format("Missing time unit in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), value.length());
+        }
+        if (unitIndex == 0) {
+            throw new ParseException(String.format("Missing number in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), 0);
+        }
+
+        final String numberPart = value.substring(0, unitIndex).trim();
+        if (numberPart.isEmpty()) {
+            throw new ParseException(String.format("Missing number in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), 0);
+        }
+
+        final String unitPart = value.substring(unitIndex).trim();
+
+        long duration;
+        try {
+            duration = Long.parseLong(numberPart);
+        } catch (final NumberFormatException e) {
+            throw (ParseException) new ParseException(String.format("Invalid number in TimeValue: '%s'. Number must be a valid long.", value), 0).initCause(e);
+        }
+
+        final TimeUnit timeUnit = parseTimeUnit(unitPart, value);
+        return TimeValue.of(duration, timeUnit);
+    }
+
+    private static TimeUnit parseTimeUnit(final String unitStr, final String originalValue) throws ParseException {
+        final String upperUnit = unitStr.toUpperCase(Locale.ROOT);
+        switch (upperUnit) {
+            case "NS":
+            case "NANOSECOND":
+            case "NANOSECONDS":
+                return TimeUnit.NANOSECONDS;
+            case "US":
+            case "MICROSECOND":
+            case "MICROSECONDS":
+                return TimeUnit.MICROSECONDS;
+            case "MS":
+            case "MILLISECOND":
+            case "MILLISECONDS":
+                return TimeUnit.MILLISECONDS;
+            case "S":
+            case "SECOND":
+            case "SECONDS":
+                return TimeUnit.SECONDS;
+            case "M":
+            case "MINUTE":
+            case "MINUTES":
+                return TimeUnit.MINUTES;
+            case "H":
+            case "HOUR":
+            case "HOURS":
+                return TimeUnit.HOURS;
+            case "D":
+            case "DAY":
+            case "DAYS":
+                return TimeUnit.DAYS;
+            default:
+                throw new ParseException(String.format("Invalid time unit '%s' in '%s'. Supported units: ns, us, ms, s, m, h, d, and their full names.", unitStr, originalValue), 0);
+        }
     }
 
     private final long duration;

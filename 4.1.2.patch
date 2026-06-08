@@ -1,0 +1,230 @@
+diff --git a/httpcore5/src/main/java/org/apache/hc/core5/util/TimeValue.java b/httpcore5/src/main/java/org/apache/hc/core5/util/TimeValue.java
+index dd0e99428..8208ad61a 100644
+--- a/httpcore5/src/main/java/org/apache/hc/core5/util/TimeValue.java
++++ b/httpcore5/src/main/java/org/apache/hc/core5/util/TimeValue.java
+@@ -254,15 +254,133 @@ static ChronoUnit toChronoUnit(final TimeUnit timeUnit) {
+      * @throws ParseException if the number cannot be parsed
+      */
+     public static TimeValue parse(final String value) throws ParseException {
+-        final String split[] = value.trim().split("\\s+");
+-        if (split.length < 2) {
+-            throw new IllegalArgumentException(
+-                    String.format("Expected format for <Long><SPACE><java.util.concurrent.TimeUnit>: %s", value));
++        if (value == null) {
++            throw new ParseException("TimeValue string cannot be null", 0);
++        }
++        final String trimmed = value.trim();
++        if (trimmed.isEmpty()) {
++            throw new ParseException("TimeValue string cannot be empty or blank", 0);
++        }
++        if (trimmed.startsWith("P") || trimmed.startsWith("-P") || trimmed.startsWith("+P") ||
++                trimmed.startsWith("p") || trimmed.startsWith("-p") || trimmed.startsWith("+p")) {
++            return parseIso8601(trimmed, value);
++        }
++        return parseFormat(trimmed);
++    }
++
++    private static TimeValue parseIso8601(final String trimmed, final String originalValue) throws ParseException {
++        try {
++            final Duration duration = Duration.parse(trimmed);
++            return fromDurationLossless(duration, originalValue);
++        } catch (final Exception e) {
++            if (e instanceof ParseException) {
++                throw (ParseException) e;
++            }
++            throw (ParseException) new ParseException(String.format("Invalid ISO-8601 duration: '%s'.", originalValue), 0).initCause(e);
++        }
++    }
++
++    private static TimeValue fromDurationLossless(final Duration duration, final String originalValue) throws ParseException {
++        final long seconds = duration.getSeconds();
++        final int nanos = duration.getNano();
++
++        try {
++            if (nanos != 0) {
++                if (nanos % 1_000_000 == 0) {
++                    final long millis = Math.addExact(Math.multiplyExact(seconds, 1000L), nanos / 1_000_000L);
++                    return TimeValue.of(millis, TimeUnit.MILLISECONDS);
++                }
++                if (nanos % 1_000 == 0) {
++                    final long micros = Math.addExact(Math.multiplyExact(seconds, 1_000_000L), nanos / 1_000L);
++                    return TimeValue.of(micros, TimeUnit.MICROSECONDS);
++                }
++                final long totalNanos = Math.addExact(Math.multiplyExact(seconds, 1_000_000_000L), nanos);
++                return TimeValue.of(totalNanos, TimeUnit.NANOSECONDS);
++            } else {
++                if (seconds % (24 * 3600) == 0) {
++                    return TimeValue.of(seconds / (24 * 3600), TimeUnit.DAYS);
++                }
++                if (seconds % 3600 == 0) {
++                    return TimeValue.of(seconds / 3600, TimeUnit.HOURS);
++                }
++                if (seconds % 60 == 0) {
++                    return TimeValue.of(seconds / 60, TimeUnit.MINUTES);
++                }
++                return TimeValue.of(seconds, TimeUnit.SECONDS);
++            }
++        } catch (final ArithmeticException e) {
++            throw (ParseException) new ParseException(String.format("ISO-8601 duration too large to represent as TimeValue: '%s'", originalValue), 0).initCause(e);
++        }
++    }
++
++    private static TimeValue parseFormat(final String value) throws ParseException {
++        int unitIndex = -1;
++        for (int i = 0; i < value.length(); i++) {
++            final char c = value.charAt(i);
++            if (!Character.isDigit(c) && c != '+' && c != '-' && c != '.' && !Character.isWhitespace(c)) {
++                unitIndex = i;
++                break;
++            }
++        }
++        if (unitIndex == -1) {
++            throw new ParseException(String.format("Missing time unit in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), value.length());
++        }
++        if (unitIndex == 0) {
++            throw new ParseException(String.format("Missing number in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), 0);
++        }
++
++        final String numberPart = value.substring(0, unitIndex).trim();
++        if (numberPart.isEmpty()) {
++            throw new ParseException(String.format("Missing number in TimeValue: '%s'. Expected format <number><unit> (e.g., 250ms, 2 h).", value), 0);
++        }
++
++        final String unitPart = value.substring(unitIndex).trim();
++
++        long duration;
++        try {
++            duration = Long.parseLong(numberPart);
++        } catch (final NumberFormatException e) {
++            throw (ParseException) new ParseException(String.format("Invalid number in TimeValue: '%s'. Number must be a valid long.", value), 0).initCause(e);
++        }
++
++        final TimeUnit timeUnit = parseTimeUnit(unitPart, value);
++        return TimeValue.of(duration, timeUnit);
++    }
++
++    private static TimeUnit parseTimeUnit(final String unitStr, final String originalValue) throws ParseException {
++        final String upperUnit = unitStr.toUpperCase(Locale.ROOT);
++        switch (upperUnit) {
++            case "NS":
++            case "NANOSECOND":
++            case "NANOSECONDS":
++                return TimeUnit.NANOSECONDS;
++            case "US":
++            case "MICROSECOND":
++            case "MICROSECONDS":
++                return TimeUnit.MICROSECONDS;
++            case "MS":
++            case "MILLISECOND":
++            case "MILLISECONDS":
++                return TimeUnit.MILLISECONDS;
++            case "S":
++            case "SECOND":
++            case "SECONDS":
++                return TimeUnit.SECONDS;
++            case "M":
++            case "MINUTE":
++            case "MINUTES":
++                return TimeUnit.MINUTES;
++            case "H":
++            case "HOUR":
++            case "HOURS":
++                return TimeUnit.HOURS;
++            case "D":
++            case "DAY":
++            case "DAYS":
++                return TimeUnit.DAYS;
++            default:
++                throw new ParseException(String.format("Invalid time unit '%s' in '%s'. Supported units: ns, us, ms, s, m, h, d, and their full names.", unitStr, originalValue), 0);
+         }
+-        final String clean0 = split[0].trim();
+-        final String clean1 = split[1].trim().toUpperCase(Locale.ROOT);
+-        final String timeUnitStr = clean1.endsWith("S") ? clean1 : clean1 + "S";
+-        return TimeValue.of(Long.parseLong(clean0), TimeUnit.valueOf(timeUnitStr));
+     }
+ 
+     private final long duration;
+diff --git a/httpcore5/src/test/java/org/apache/hc/core5/util/TestTimeValue.java b/httpcore5/src/test/java/org/apache/hc/core5/util/TestTimeValue.java
+index e3d71a3f8..7e7b67608 100644
+--- a/httpcore5/src/test/java/org/apache/hc/core5/util/TestTimeValue.java
++++ b/httpcore5/src/test/java/org/apache/hc/core5/util/TestTimeValue.java
+@@ -274,7 +274,7 @@ void testToString() {
+     @Test
+     void testFromString() throws ParseException {
+         final TimeValue maxSeconds = TimeValue.ofSeconds(Long.MAX_VALUE);
+-        Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 SECONDS"));
++        // Old formats and spacing
+         Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 SECONDS"));
+         Assertions.assertEquals(maxSeconds, TimeValue.parse(" 9223372036854775807 SECONDS "));
+         Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807 Seconds"));
+@@ -282,6 +282,70 @@ void testFromString() throws ParseException {
+         Assertions.assertEquals(maxSeconds, TimeValue.parse("9223372036854775807\tSeconds"));
+         Assertions.assertEquals(TimeValue.ZERO_MILLISECONDS, TimeValue.parse("0 MILLISECONDS"));
+         Assertions.assertEquals(TimeValue.ofMilliseconds(1), TimeValue.parse("1 MILLISECOND"));
++
++        // Short units compact and spaced
++        Assertions.assertEquals(TimeValue.ofNanoseconds(250), TimeValue.parse("250ns"));
++        Assertions.assertEquals(TimeValue.ofMicroseconds(250), TimeValue.parse("250us"));
++        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250ms"));
++        Assertions.assertEquals(TimeValue.ofSeconds(250), TimeValue.parse("250s"));
++        Assertions.assertEquals(TimeValue.ofMinutes(250), TimeValue.parse("250m"));
++        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2h"));
++        Assertions.assertEquals(TimeValue.ofDays(5), TimeValue.parse("5d"));
++
++        Assertions.assertEquals(TimeValue.ofNanoseconds(250), TimeValue.parse("250 ns"));
++        Assertions.assertEquals(TimeValue.ofMicroseconds(250), TimeValue.parse("250 us"));
++        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250 ms"));
++        Assertions.assertEquals(TimeValue.ofSeconds(250), TimeValue.parse("250 s"));
++        Assertions.assertEquals(TimeValue.ofMinutes(250), TimeValue.parse("250 m"));
++        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2 h"));
++        Assertions.assertEquals(TimeValue.ofDays(5), TimeValue.parse("5 d"));
++
++        // Mixed case
++        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("250MS"));
++        Assertions.assertEquals(TimeValue.ofDays(5), TimeValue.parse("5D"));
++        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("2 H"));
++
++        // Signs
++        Assertions.assertEquals(TimeValue.ofSeconds(30), TimeValue.parse("+30s"));
++        Assertions.assertEquals(TimeValue.ofMilliseconds(-1), TimeValue.parse("-1 ms"));
++        
++        // Old formats edge cases
++        Assertions.assertEquals(TimeValue.ofMinutes(1), TimeValue.parse("1 M"));
++
++        // Reversibility check
++        for (TimeUnit unit : TimeUnit.values()) {
++            TimeValue tv = TimeValue.of(10, unit);
++            Assertions.assertEquals(tv, TimeValue.parse(tv.toString()));
++        }
++
++        // ISO-8601 duration
++        Assertions.assertEquals(TimeValue.ofMilliseconds(250), TimeValue.parse("PT0.25S"));
++        Assertions.assertEquals(TimeValue.ofMicroseconds(1), TimeValue.parse("PT0.000001S"));
++        Assertions.assertEquals(TimeValue.ofHours(2), TimeValue.parse("PT2H"));
++        Assertions.assertEquals(TimeValue.ofMinutes(15), TimeValue.parse("PT15M"));
++        Assertions.assertEquals(TimeValue.ofDays(1), TimeValue.parse("P1D"));
++        Assertions.assertEquals(TimeValue.ofMinutes(90), TimeValue.parse("PT1H30M"));
++
++        // ISO-8601 edge cases and signs
++        Assertions.assertEquals(TimeValue.ofMilliseconds(-250), TimeValue.parse("-PT0.25S"));
++        Assertions.assertEquals(TimeValue.ofMinutes(-90), TimeValue.parse("-PT1H30M"));
++
++        // Long boundaries
++        Assertions.assertEquals(TimeValue.ofNanoseconds(Long.MAX_VALUE), TimeValue.parse("9223372036854775807 ns"));
++        Assertions.assertEquals(TimeValue.ofMilliseconds(Long.MIN_VALUE), TimeValue.parse("-9223372036854775808 ms"));
++    }
++
++    @Test
++    void testParseInvalid() {
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse(""));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("   "));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("12"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("ms"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("12 fortnight"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("abc ms"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("PT-nope"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("1.5 ms"));
++        Assertions.assertThrows(ParseException.class, () -> TimeValue.parse("PT9223372036854775808S"));
+     }
+ 
+     @Test
